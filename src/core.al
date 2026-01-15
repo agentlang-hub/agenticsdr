@@ -83,6 +83,18 @@ record MeetingInfo {
     participants String[]
 }
 
+record CompanyResult {
+    id String,
+    domain String @optional,
+    name String @optional
+}
+
+record DealResult {
+    id String,
+    dealName String @optional,
+    dealStage String @optional
+}
+
 agent filterEmailRelevance {
     llm "sonnet_llm",
     role "You are an intelligent email filter that protects the CRM from irrelevant noise.",
@@ -482,7 +494,11 @@ workflow findOrCreateCompany {
     
     if (companies.length > 0) {
         companies @as [company];
-        company
+        {CompanyResult {
+            id company.id,
+            domain company.domain,
+            name company.name
+        }}
     } else {
         {hubspot/Company {
             domain findOrCreateCompany.domain,
@@ -492,7 +508,11 @@ workflow findOrCreateCompany {
             ai_lead_score 0
         }} @as newCompany;
 
-        newCompany
+        {CompanyResult {
+            id newCompany.id,
+            domain newCompany.domain,
+            name newCompany.name
+        }}
     }
 }
 
@@ -617,7 +637,7 @@ workflow ensureDeal {
         associated_contacts ensureDeal.contactIds,
         description "Deal created from email thread"
     }} @as createdDeal;
-
+    
     {hubspot/Note {
         note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Created via Agentic SDR from email thread.",
         owner ensureDeal.ownerId,
@@ -626,7 +646,11 @@ workflow ensureDeal {
         associated_deal createdDeal.id
     }};
     
-    createdDeal
+    {DealResult {
+        id createdDeal.id,
+        dealName createdDeal.deal_name,
+        dealStage createdDeal.deal_stage
+    }}
 }
 
 event createMeetingEngagement {
@@ -730,81 +754,40 @@ workflow skipProcessing {
 flow sdrManager {
     filterEmailRelevance --> isEmailRelevant
     isEmailRelevant --> "SkipEmail" {skipProcessing {reason EmailRelevanceResult.reason}}
+
     isEmailRelevant --> "ProcessEmail" extractMultipleContacts
+
     extractMultipleContacts --> resolveCompany
+
     resolveCompany --> {findOrCreateThreadState {threadId EmailData.threadId}}
-    findOrCreateThreadState --> {findOrCreateCompany {
-        domain CompanyResolutionResult.domain,
-        name CompanyResolutionResult.companyName
-    }}
+
+    findOrCreateThreadState --> {findOrCreateCompany {domain CompanyResolutionResult.domain, name CompanyResolutionResult.companyName}}
+
     findOrCreateCompany --> qualifyLead
-    qualifyLead --> {updateCompanyLeadStage {
-        companyId company.id,
-        leadStage LeadQualificationResult.stage,
-        leadScore LeadQualificationResult.score
-    }}
+
+    qualifyLead --> {updateCompanyLeadStage {companyId CompanyResult.id, leadStage LeadQualificationResult.stage, leadScore LeadQualificationResult.score}}
+
     updateCompanyLeadStage --> classifyDealStage
+
     classifyDealStage --> shouldCreateDeal
+
     shouldCreateDeal --> extractMeetingInfo
-    extractMeetingInfo --> {ensureContact {
-        email MultiContactResult.primaryContactEmail,
-        firstName "Contact",
-        lastName "Person",
-        companyId company.id
-    }}
-    shouldCreateDeal --> "CreateDeal" {ensureDeal {
-        companyId company.id,
-        dealStage DealStageResult.stage,
-        dealName CompanyResolutionResult.companyName + " - " + LeadQualificationResult.stage,
-        contactIds [MultiContactResult.primaryContactEmail],
-        ownerId SDRConfig.hubspotOwnerId
-    }}
-    ensureDeal --> {createMeetingEngagement {
-        title MeetingInfo.title,
-        body MeetingInfo.body,
-        date MeetingInfo.date,
-        ownerId SDRConfig.hubspotOwnerId,
-        contactIds [MultiContactResult.primaryContactEmail],
-        companyId company.id,
-        dealId createdDeal.id
-    }}
-    createMeetingEngagement --> {createThreadNote {
-        companyId company.id,
-        contactIds [MultiContactResult.primaryContactEmail],
-        noteBody "✅ QUALIFIED LEAD | Score: " + LeadQualificationResult.score + " | Lead Stage: " + LeadQualificationResult.stage + " | Deal Stage: " + DealStageResult.stage + "\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction,
-        ownerId SDRConfig.hubspotOwnerId,
-        dealId createdDeal.id
-    }}
-    createThreadNote --> {updateThreadState {
-        threadId EmailData.threadId,
-        companyId company.id,
-        companyName CompanyResolutionResult.companyName,
-        leadStage LeadQualificationResult.stage,
-        dealId createdDeal.id,
-        dealStage DealStageResult.stage,
-        incrementEmailCount true
-    }}
-    shouldCreateDeal --> "NoDeal" {createMeetingEngagement {
-        title MeetingInfo.title,
-        body MeetingInfo.body,
-        date MeetingInfo.date,
-        ownerId SDRConfig.hubspotOwnerId,
-        contactIds [MultiContactResult.primaryContactEmail],
-        companyId company.id
-    }}
-    shouldCreateDeal --> "NoDeal" {createThreadNote {
-        companyId company.id,
-        contactIds [MultiContactResult.primaryContactEmail],
-        noteBody "📊 Lead Analysis | Score: " + LeadQualificationResult.score + " | Stage: " + LeadQualificationResult.stage + "\n\nNot yet qualified for deal creation.\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction,
-        ownerId SDRConfig.hubspotOwnerId
-    }}
-    shouldCreateDeal --> "NoDeal" {updateThreadState {
-        threadId EmailData.threadId,
-        companyId company.id,
-        companyName CompanyResolutionResult.companyName,
-        leadStage LeadQualificationResult.stage,
-        incrementEmailCount true
-    }}
+
+    extractMeetingInfo --> {ensureContact {email MultiContactResult.primaryContactEmail, firstName "Contact", lastName "Person", companyId CompanyResult.id}}
+
+    shouldCreateDeal --> "CreateDeal" {ensureDeal {companyId CompanyResult.id, dealStage DealStageResult.stage, dealName CompanyResolutionResult.companyName + " - " + LeadQualificationResult.stage, contactIds [MultiContactResult.primaryContactEmail], ownerId SDRConfig.hubspotOwnerId}}
+    
+    ensureDeal --> {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id, dealId DealResult.id}}
+    
+    createMeetingEngagement --> {createThreadNote {companyId CompanyResult.id, contactIds [MultiContactResult.primaryContactEmail], noteBody "✅ QUALIFIED LEAD | Score: " + LeadQualificationResult.score + " | Lead Stage: " + LeadQualificationResult.stage + " | Deal Stage: " + DealStageResult.stage + "\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction, ownerId SDRConfig.hubspotOwnerId, dealId DealResult.id}}
+    
+    createThreadNote --> {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, dealId DealResult.id, dealStage DealStageResult.stage, incrementEmailCount true}}
+
+    shouldCreateDeal --> "NoDeal" {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id}}
+    
+    shouldCreateDeal --> "NoDeal" {createThreadNote {companyId CompanyResult.id, contactIds [MultiContactResult.primaryContactEmail], noteBody "📊 Lead Analysis | Score: " + LeadQualificationResult.score + " | Stage: " + LeadQualificationResult.stage + "\n\nNot yet qualified for deal creation.\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction, ownerId SDRConfig.hubspotOwnerId}}
+    
+    shouldCreateDeal --> "NoDeal" {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, incrementEmailCount true}}
 }
 
 @public agent sdrManager {

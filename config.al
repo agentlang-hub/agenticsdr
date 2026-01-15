@@ -1,7 +1,8 @@
 {
   "agentlang": {
     "service": {
-      "port": 8080
+      "port": 8080,
+      "httpFileHandling": false
     },
     "store": {
       "type": "sqlite",
