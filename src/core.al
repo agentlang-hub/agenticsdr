@@ -251,41 +251,57 @@ INPUT DATA:
 - Email Body: {{EmailData.body}}
 - Email Signature: (look for company name in body/signature)
 
+COMMON PERSONAL EMAIL DOMAINS (DO NOT USE AS COMPANY):
+- gmail.com, googlemail.com
+- outlook.com, hotmail.com, live.com
+- yahoo.com, ymail.com
+- fastmail.com, fastmail.fm
+- protonmail.com, proton.me
+- icloud.com, me.com, mac.com
+- aol.com
+- mail.com, email.com
+
+If the email domain is from this list, you MUST look for company information in the email signature or body. If no company information is found, set resolved: false.
+
 RESOLUTION STRATEGY (try in order):
 
-1. DOMAIN MATCHING (highest confidence)
-   - Extract domain from primary contact email
-   - Example: alice@acme.com → domain: acme.com, name: Acme
-   - Clean up domain name (remove .com, capitalize)
-
-2. SIGNATURE PARSING (medium-high confidence)
+1. SIGNATURE PARSING (highest priority for personal emails)
    - Look for company name in email signature
    - Common patterns:
      * Line with just company name
      * Line with title + company (e.g., \"CEO at Acme Corp\")
      * Footer with company information
 
-3. CONVERSATION DOMINANCE (medium confidence)
-   - If multiple external domains, choose most frequent
-   - Example: 3 from acme.com, 1 from other.com → acme.com
-
-4. EXPLICIT MENTION (low-medium confidence)
+2. EXPLICIT MENTION (high priority for personal emails)
    - Company name mentioned in body
    - Phrases like \"At [Company]\" or \"[Company] team\"
+   - \"I work at [Company]\" or \"I'm with [Company]\"
+
+3. DOMAIN MATCHING (only for business domains)
+   - Extract domain from primary contact email
+   - Example: alice@acme.com → domain: acme.com, name: Acme
+   - Clean up domain name (remove .com, capitalize)
+   - SKIP if domain is in the common personal email list above
+
+4. CONVERSATION DOMINANCE (fallback)
+   - If multiple external domains, choose most frequent
+   - Example: 3 from acme.com, 1 from other.com → acme.com
+   - SKIP domains in the common personal email list
 
 RETURN FORMAT:
 {
   \"resolved\": true/false,
   \"companyName\": \"Acme Corp\" (human-readable name),
-  \"domain\": \"acme.com\" (canonical domain),
+  \"domain\": \"acme.com\" (canonical domain, can be empty if personal email),
   \"confidence\": \"high\" | \"medium\" | \"low\",
   \"source\": \"domain\" | \"signature\" | \"existing\" | \"conversation\"
 }
 
 RULES:
-- If ambiguous or unclear, set resolved: false
+- If email is from personal domain AND no company found in signature/body, set resolved: false
+- Do NOT use personal email domains (gmail.com, outlook.com, etc.) as company names
 - Do NOT guess company names
-- Use actual domain from email addresses
+- Use actual domain from email addresses ONLY if it's a business domain
 - Clean domain: remove www, .com/etc for name generation
 - Return ONLY the CompanyResolutionResult structure, no markdown
 
@@ -631,29 +647,45 @@ event findOrCreateCompany {
 }
 
 workflow findOrCreateCompany {
-
-    {hubspot/Company {domain? findOrCreateCompany.domain}} @as companies;
     
-    if (companies.length > 0) {
-        companies @as [company];
-        {CompanyResult {
-            id company.id,
-            domain company.domain,
-            name company.name
-        }}
-    } else {
-        {hubspot/Company {
-            domain findOrCreateCompany.domain,
-            name findOrCreateCompany.name,
-            lifecycle_stage "lead",
-            lead_status "NEW",
-            ai_lead_score 0
-        }} @as newCompany;
+    if (findOrCreateCompany.domain) {
+        if (findOrCreateCompany.domain != "") {
+            {hubspot/Company {domain? findOrCreateCompany.domain}} @as companies;
+            
+            if (companies.length > 0) {
+                companies @as [company];
+                {CompanyResult {
+                    id company.id,
+                    domain company.domain,
+                    name company.name
+                }}
+            } else {
+                {hubspot/Company {
+                    domain findOrCreateCompany.domain,
+                    name findOrCreateCompany.name,
+                    lifecycle_stage "lead",
+                    lead_status "NEW",
+                    ai_lead_score 0
+                }} @as newCompany;
 
+                {CompanyResult {
+                    id newCompany.id,
+                    domain newCompany.domain,
+                    name newCompany.name
+                }}
+            }
+        } else {
+            {CompanyResult {
+                id "no-company",
+                domain "",
+                name "Individual Contact"
+            }}
+        }
+    } else {
         {CompanyResult {
-            id newCompany.id,
-            domain newCompany.domain,
-            name newCompany.name
+            id "no-company",
+            domain "",
+            name "Individual Contact"
         }}
     }
 }
@@ -665,26 +697,33 @@ event updateCompanyLeadStage {
 }
 
 workflow updateCompanyLeadStage {
-    if (updateCompanyLeadStage.leadStage == "QUALIFIED") {
-        "salesqualifiedlead" @as lifecycleStage;
-        "IN_PROGRESS" @as leadStatus
-    } else if (updateCompanyLeadStage.leadStage == "ENGAGED") {
-        "marketingqualifiedlead" @as lifecycleStage;
-        "OPEN" @as leadStatus
-    } else if (updateCompanyLeadStage.leadStage == "NEW") {
-        "lead" @as lifecycleStage;
-        "NEW" @as leadStatus
+    if (updateCompanyLeadStage.companyId == "no-company") {
+        {SkipResult {
+            skipped true,
+            reason "No company to update (personal email domain)"
+        }}
     } else {
-        "other" @as lifecycleStage;
-        "UNQUALIFIED" @as leadStatus
-    };
-    
-    {hubspot/Company {
-        id? updateCompanyLeadStage.companyId,
-        lifecycle_stage lifecycleStage,
-        lead_status leadStatus,
-        ai_lead_score updateCompanyLeadStage.leadScore
-    }}
+        if (updateCompanyLeadStage.leadStage == "QUALIFIED") {
+            "salesqualifiedlead" @as lifecycleStage;
+            "IN_PROGRESS" @as leadStatus
+        } else if (updateCompanyLeadStage.leadStage == "ENGAGED") {
+            "marketingqualifiedlead" @as lifecycleStage;
+            "OPEN" @as leadStatus
+        } else if (updateCompanyLeadStage.leadStage == "NEW") {
+            "lead" @as lifecycleStage;
+            "NEW" @as leadStatus
+        } else {
+            "other" @as lifecycleStage;
+            "UNQUALIFIED" @as leadStatus
+        };
+        
+        {hubspot/Company {
+            id? updateCompanyLeadStage.companyId,
+            lifecycle_stage lifecycleStage,
+            lead_status leadStatus,
+            ai_lead_score updateCompanyLeadStage.leadScore
+        }}
+    }
 }
 
 event ensureContact {
@@ -701,13 +740,29 @@ workflow ensureContact {
         foundContacts @as [contact];
         contact
     } else {
-        // Create new contact with company association
-        {hubspot/Contact {
-            email ensureContact.email,
-            first_name ensureContact.firstName,
-            last_name ensureContact.lastName,
-            company ensureContact.companyId
-        }}
+        // Create new contact with optional company association
+        if (ensureContact.companyId) {
+            if (ensureContact.companyId != "no-company") {
+                {hubspot/Contact {
+                    email ensureContact.email,
+                    first_name ensureContact.firstName,
+                    last_name ensureContact.lastName,
+                    company ensureContact.companyId
+                }}
+            } else {
+                {hubspot/Contact {
+                    email ensureContact.email,
+                    first_name ensureContact.firstName,
+                    last_name ensureContact.lastName
+                }}
+            }
+        } else {
+            {hubspot/Contact {
+                email ensureContact.email,
+                first_name ensureContact.firstName,
+                last_name ensureContact.lastName
+            }}
+        }
     }
 }
 
@@ -771,28 +826,74 @@ event ensureDeal {
 }
 
 workflow ensureDeal {
-    {hubspot/Deal {
-        deal_name ensureDeal.dealName,
-        deal_stage ensureDeal.dealStage,
-        owner ensureDeal.ownerId,
-        associated_company ensureDeal.companyId,
-        associated_contacts ensureDeal.contactIds,
-        description "Deal created from email thread"
-    }} @as createdDeal;
-    
-    {hubspot/Note {
-        note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Created via Agentic SDR from email thread.",
-        owner ensureDeal.ownerId,
-        associated_company ensureDeal.companyId,
-        associated_contacts ensureDeal.contactIds,
-        associated_deal createdDeal.id
-    }};
-    
-    {DealResult {
-        id createdDeal.id,
-        dealName createdDeal.deal_name,
-        dealStage createdDeal.deal_stage
-    }}
+    if (ensureDeal.companyId) {
+        if (ensureDeal.companyId != "no-company") {
+            {hubspot/Deal {
+                deal_name ensureDeal.dealName,
+                deal_stage ensureDeal.dealStage,
+                owner ensureDeal.ownerId,
+                associated_company ensureDeal.companyId,
+                associated_contacts ensureDeal.contactIds,
+                description "Deal created from email thread"
+            }} @as createdDeal;
+            
+            {hubspot/Note {
+                note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Created via Agentic SDR from email thread.",
+                owner ensureDeal.ownerId,
+                associated_company ensureDeal.companyId,
+                associated_contacts ensureDeal.contactIds,
+                associated_deal createdDeal.id
+            }};
+            
+            {DealResult {
+                id createdDeal.id,
+                dealName createdDeal.deal_name,
+                dealStage createdDeal.deal_stage
+            }}
+        } else {
+            {hubspot/Deal {
+                deal_name ensureDeal.dealName,
+                deal_stage ensureDeal.dealStage,
+                owner ensureDeal.ownerId,
+                associated_contacts ensureDeal.contactIds,
+                description "Deal created from email thread (individual contact, no company)"
+            }} @as createdDeal;
+            
+            {hubspot/Note {
+                note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Individual contact without company. Created via Agentic SDR from email thread.",
+                owner ensureDeal.ownerId,
+                associated_contacts ensureDeal.contactIds,
+                associated_deal createdDeal.id
+            }};
+            
+            {DealResult {
+                id createdDeal.id,
+                dealName createdDeal.deal_name,
+                dealStage createdDeal.deal_stage
+            }}
+        }
+    } else {
+        {hubspot/Deal {
+            deal_name ensureDeal.dealName,
+            deal_stage ensureDeal.dealStage,
+            owner ensureDeal.ownerId,
+            associated_contacts ensureDeal.contactIds,
+            description "Deal created from email thread (individual contact, no company)"
+        }} @as createdDeal;
+        
+        {hubspot/Note {
+            note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Individual contact without company. Created via Agentic SDR from email thread.",
+            owner ensureDeal.ownerId,
+            associated_contacts ensureDeal.contactIds,
+            associated_deal createdDeal.id
+        }};
+        
+        {DealResult {
+            id createdDeal.id,
+            dealName createdDeal.deal_name,
+            dealStage createdDeal.deal_stage
+        }}
+    }
 }
 
 event createMeetingEngagement {
@@ -806,15 +907,68 @@ event createMeetingEngagement {
 }
 
 workflow createMeetingEngagement {
-    {hubspot/Meeting {
-        meeting_title createMeetingEngagement.title,
-        meeting_body createMeetingEngagement.body,
-        meeting_date createMeetingEngagement.date,
-        owner createMeetingEngagement.ownerId,
-        associated_contacts createMeetingEngagement.contactIds,
-        associated_companies createMeetingEngagement.companyId,
-        associated_deals createMeetingEngagement.dealId
-    }}
+    if (createMeetingEngagement.companyId) {
+        if (createMeetingEngagement.companyId != "no-company") {
+            if (createMeetingEngagement.dealId) {
+                {hubspot/Meeting {
+                    meeting_title createMeetingEngagement.title,
+                    meeting_body createMeetingEngagement.body,
+                    meeting_date createMeetingEngagement.date,
+                    owner createMeetingEngagement.ownerId,
+                    associated_contacts createMeetingEngagement.contactIds,
+                    associated_companies [createMeetingEngagement.companyId],
+                    associated_deals [createMeetingEngagement.dealId]
+                }}
+            } else {
+                {hubspot/Meeting {
+                    meeting_title createMeetingEngagement.title,
+                    meeting_body createMeetingEngagement.body,
+                    meeting_date createMeetingEngagement.date,
+                    owner createMeetingEngagement.ownerId,
+                    associated_contacts createMeetingEngagement.contactIds,
+                    associated_companies [createMeetingEngagement.companyId]
+                }}
+            }
+        } else {
+            if (createMeetingEngagement.dealId) {
+                {hubspot/Meeting {
+                    meeting_title createMeetingEngagement.title,
+                    meeting_body createMeetingEngagement.body,
+                    meeting_date createMeetingEngagement.date,
+                    owner createMeetingEngagement.ownerId,
+                    associated_contacts createMeetingEngagement.contactIds,
+                    associated_deals [createMeetingEngagement.dealId]
+                }}
+            } else {
+                {hubspot/Meeting {
+                    meeting_title createMeetingEngagement.title,
+                    meeting_body createMeetingEngagement.body,
+                    meeting_date createMeetingEngagement.date,
+                    owner createMeetingEngagement.ownerId,
+                    associated_contacts createMeetingEngagement.contactIds
+                }}
+            }
+        }
+    } else {
+        if (createMeetingEngagement.dealId) {
+            {hubspot/Meeting {
+                meeting_title createMeetingEngagement.title,
+                meeting_body createMeetingEngagement.body,
+                meeting_date createMeetingEngagement.date,
+                owner createMeetingEngagement.ownerId,
+                associated_contacts createMeetingEngagement.contactIds,
+                associated_deals [createMeetingEngagement.dealId]
+            }}
+        } else {
+            {hubspot/Meeting {
+                meeting_title createMeetingEngagement.title,
+                meeting_body createMeetingEngagement.body,
+                meeting_date createMeetingEngagement.date,
+                owner createMeetingEngagement.ownerId,
+                associated_contacts createMeetingEngagement.contactIds
+            }}
+        }
+    }
 }
 
 event createThreadNote {
@@ -826,13 +980,31 @@ event createThreadNote {
 }
 
 workflow createThreadNote {
-    {hubspot/Note {
-        note_body createThreadNote.noteBody,
-        owner createThreadNote.ownerId,
-        associated_company createThreadNote.companyId,
-        associated_contacts createThreadNote.contactIds,
-        associated_deal createThreadNote.dealId
-    }}
+    if (createThreadNote.companyId) {
+        if (createThreadNote.companyId != "no-company") {
+            {hubspot/Note {
+                note_body createThreadNote.noteBody,
+                owner createThreadNote.ownerId,
+                associated_company createThreadNote.companyId,
+                associated_contacts createThreadNote.contactIds,
+                associated_deal createThreadNote.dealId
+            }}
+        } else {
+            {hubspot/Note {
+                note_body createThreadNote.noteBody,
+                owner createThreadNote.ownerId,
+                associated_contacts createThreadNote.contactIds,
+                associated_deal createThreadNote.dealId
+            }}
+        }
+    } else {
+        {hubspot/Note {
+            note_body createThreadNote.noteBody,
+            owner createThreadNote.ownerId,
+            associated_contacts createThreadNote.contactIds,
+            associated_deal createThreadNote.dealId
+        }}
+    }
 }
 
 event createFollowUpTask {
@@ -848,18 +1020,46 @@ event createFollowUpTask {
 }
 
 workflow createFollowUpTask {
-    {hubspot/Task {
-        hs_task_subject createFollowUpTask.taskSubject,
-        hs_task_body createFollowUpTask.taskBody,
-        hs_timestamp createFollowUpTask.dueDate,
-        hubspot_owner_id createFollowUpTask.ownerId,
-        hs_task_status "NOT_STARTED",
-        hs_task_type createFollowUpTask.taskType,
-        hs_task_priority createFollowUpTask.priority,
-        associated_company createFollowUpTask.companyId,
-        associated_contacts createFollowUpTask.contactIds,
-        associated_deal createFollowUpTask.dealId
-    }}
+    if (createFollowUpTask.companyId) {
+        if (createFollowUpTask.companyId != "no-company") {
+            {hubspot/Task {
+                hs_task_subject createFollowUpTask.taskSubject,
+                hs_task_body createFollowUpTask.taskBody,
+                hs_timestamp createFollowUpTask.dueDate,
+                hubspot_owner_id createFollowUpTask.ownerId,
+                hs_task_status "NOT_STARTED",
+                hs_task_type createFollowUpTask.taskType,
+                hs_task_priority createFollowUpTask.priority,
+                associated_company createFollowUpTask.companyId,
+                associated_contacts createFollowUpTask.contactIds,
+                associated_deal createFollowUpTask.dealId
+            }}
+        } else {
+            {hubspot/Task {
+                hs_task_subject createFollowUpTask.taskSubject,
+                hs_task_body createFollowUpTask.taskBody,
+                hs_timestamp createFollowUpTask.dueDate,
+                hubspot_owner_id createFollowUpTask.ownerId,
+                hs_task_status "NOT_STARTED",
+                hs_task_type createFollowUpTask.taskType,
+                hs_task_priority createFollowUpTask.priority,
+                associated_contacts createFollowUpTask.contactIds,
+                associated_deal createFollowUpTask.dealId
+            }}
+        }
+    } else {
+        {hubspot/Task {
+            hs_task_subject createFollowUpTask.taskSubject,
+            hs_task_body createFollowUpTask.taskBody,
+            hs_timestamp createFollowUpTask.dueDate,
+            hubspot_owner_id createFollowUpTask.ownerId,
+            hs_task_status "NOT_STARTED",
+            hs_task_type createFollowUpTask.taskType,
+            hs_task_priority createFollowUpTask.priority,
+            associated_contacts createFollowUpTask.contactIds,
+            associated_deal createFollowUpTask.dealId
+        }}
+    }
 }
 
 decision isEmailRelevant {
