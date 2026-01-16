@@ -95,6 +95,16 @@ record DealResult {
     dealStage String @optional
 }
 
+record TaskRecommendation {
+    shouldCreateTask Boolean,
+    taskType String @enum("EMAIL", "CALL", "TODO"),
+    taskSubject String,
+    taskBody String,
+    priority String @enum("LOW", "MEDIUM", "HIGH"),
+    dueDateOffset Int,
+    reasoning String
+}
+
 agent filterEmailRelevance {
     llm "sonnet_llm",
     role "You are an intelligent email filter that protects the CRM from irrelevant noise.",
@@ -483,6 +493,138 @@ CRITICAL OUTPUT FORMAT RULES:
     responseSchema agenticsdr.core/MeetingInfo
 }
 
+agent recommendTask {
+    llm "sonnet_llm",
+    role "You analyze sales conversations and recommend follow-up tasks for the sales team.",
+    instruction "Determine if a follow-up task is needed and what type of action should be taken.
+
+INPUT DATA:
+- Email Subject: {{EmailData.subject}}
+- Email Body: {{EmailData.body}}
+- Lead Score: {{LeadQualificationResult.score}}
+- Lead Stage: {{LeadQualificationResult.stage}}
+- Next Action: {{LeadQualificationResult.nextAction}}
+- Deal Stage: {{DealStageResult.stage}}
+- Company Name: {{CompanyResolutionResult.companyName}}
+
+TASK DECISION RULES:
+
+🎯 ALWAYS CREATE A TASK IF:
+1. Customer asks a question that needs response
+2. Customer requests information (pricing, demo, docs)
+3. Lead is QUALIFIED (score >= 51)
+4. Deal is active (not CLOSED_WON or CLOSED_LOST)
+5. Customer mentions next steps or timeline
+6. Follow-up is explicitly needed
+
+❌ DO NOT CREATE TASK IF:
+1. Email is just acknowledgment (\"Thanks!\", \"Got it!\")
+2. Deal is CLOSED_WON or CLOSED_LOST
+3. Lead is DISQUALIFIED
+4. Thread is concluded (no action needed)
+
+TASK TYPE SELECTION:
+
+📧 EMAIL:
+- Customer asked specific questions
+- Need to send information/documents
+- Following up on proposal
+- Nurturing engagement
+- Default choice for most follow-ups
+
+📞 CALL:
+- Customer explicitly requested a call
+- Deal in MEETING or NEGOTIATION stage
+- High-value qualified lead (score >= 70)
+- Complex questions better handled by phone
+- Urgent timeline mentioned
+
+✅ TODO:
+- Internal tasks (prepare proposal, check availability)
+- Research needed before responding
+- Administrative follow-up
+
+PRIORITY DETERMINATION:
+
+🔴 HIGH:
+- Qualified lead (score >= 51)
+- Deal in PROPOSAL or NEGOTIATION stage
+- Customer requested urgent response
+- Hot buying signals
+- Multiple stakeholders engaged
+
+🟡 MEDIUM:
+- Engaged lead (score 21-50)
+- Deal in DISCOVERY or MEETING stage
+- Normal follow-up
+- Standard timeline
+- Default priority
+
+🟢 LOW:
+- New lead (score 0-20)
+- Early stage exploration
+- No urgency indicated
+- Educational content request
+
+DUE DATE OFFSET (in hours from now):
+- HIGH priority: 4 hours (same day response)
+- MEDIUM priority: 24 hours (next business day)
+- LOW priority: 72 hours (within 3 days)
+- CALL tasks: always 24 hours (schedule coordination needed)
+
+TASK SUBJECT FORMAT:
+\"[ACTION] [COMPANY] - [BRIEF CONTEXT]\"
+
+Examples:
+- \"Call Acme Corp - Discuss pricing and implementation\"
+- \"Email TechStart - Answer security questions\"
+- \"Follow up GlobalCo - Send case studies\"
+
+TASK BODY CONTENT:
+Provide context for the assigned person:
+- What triggered this task (summary of email)
+- What action is needed
+- Any specific details to address
+- Next steps or desired outcome
+
+Example:
+\"Customer asked about enterprise pricing and SOC2 compliance in their latest email. They mentioned Q1 budget cycle and need information by Friday.
+
+Action needed: Send enterprise pricing sheet and link to security documentation.
+
+Key points to address:
+- Volume pricing for 500+ users
+- SOC2 certification status
+- Implementation timeline
+
+Next step: Schedule demo call if they show interest.\"
+
+RETURN FORMAT:
+{
+  \"shouldCreateTask\": true,
+  \"taskType\": \"EMAIL\",
+  \"taskSubject\": \"Email Acme Corp - Pricing and security info\",
+  \"taskBody\": \"[Detailed context as described above]\",
+  \"priority\": \"HIGH\",
+  \"dueDateOffset\": 4,
+  \"reasoning\": \"Customer is qualified lead (score 75) asking specific questions about pricing. High priority due to mentioned Q1 budget timeline.\"
+}
+
+RULES:
+- Be practical: if unclear whether task is needed, create it (better safe than sorry)
+- Task should be actionable and clear
+- Consider the full conversation context
+- Return ONLY the TaskRecommendation structure, no markdown
+
+CRITICAL OUTPUT FORMAT RULES:
+- NEVER wrap your response in markdown code blocks (``` or ``)
+- NEVER use markdown formatting in your response
+- NEVER add JSON formatting with backticks
+- Do NOT add any markdown syntax, language identifiers, or code fences",
+    retry classifyRetry,
+    responseSchema agenticsdr.core/TaskRecommendation
+}
+
 event findOrCreateCompany {
     domain String,
     name String
@@ -694,25 +836,28 @@ workflow createThreadNote {
 }
 
 event createFollowUpTask {
-    title String,
-    description String,
+    taskSubject String,
+    taskBody String,
     dueDate String,
+    taskType String @enum("EMAIL", "CALL", "TODO"),
+    priority String @enum("LOW", "MEDIUM", "HIGH"),
     ownerId String,
     companyId String @optional,
-    contactId String @optional,
+    contactIds String[] @optional,
     dealId String @optional
 }
 
 workflow createFollowUpTask {
     {hubspot/Task {
-        title createFollowUpTask.title,
-        description createFollowUpTask.description,
-        due_date createFollowUpTask.dueDate,
-        owner createFollowUpTask.ownerId,
-        status "NOT_STARTED",
-        task_type "TODO",
+        hs_task_subject createFollowUpTask.taskSubject,
+        hs_task_body createFollowUpTask.taskBody,
+        hs_timestamp createFollowUpTask.dueDate,
+        hubspot_owner_id createFollowUpTask.ownerId,
+        hs_task_status "NOT_STARTED",
+        hs_task_type createFollowUpTask.taskType,
+        hs_task_priority createFollowUpTask.priority,
         associated_company createFollowUpTask.companyId,
-        associated_contact createFollowUpTask.contactId,
+        associated_contacts createFollowUpTask.contactIds,
         associated_deal createFollowUpTask.dealId
     }}
 }
@@ -741,6 +886,15 @@ decision shouldCreateDeal {
     }
     case (shouldCreateDeal == false) {
         NoDeal
+    }
+}
+
+decision shouldCreateTask {
+    case (shouldCreateTask == true) {
+        CreateTask
+    }
+    case (shouldCreateTask == false) {
+        SkipTask
     }
 }
 
@@ -783,11 +937,46 @@ flow sdrManager {
     
     createThreadNote --> {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, dealId DealResult.id, dealStage DealStageResult.stage, incrementEmailCount true}}
 
+    updateThreadState --> recommendTask
+
+    recommendTask --> shouldCreateTask
+    
+    shouldCreateTask --> "CreateTask" {createFollowUpTask {
+        taskSubject TaskRecommendation.taskSubject,
+        taskBody TaskRecommendation.taskBody,
+        dueDate now() + (TaskRecommendation.dueDateOffset * 3600000),
+        taskType TaskRecommendation.taskType,
+        priority TaskRecommendation.priority,
+        ownerId SDRConfig.hubspotOwnerId,
+        companyId CompanyResult.id,
+        contactIds [MultiContactResult.primaryContactEmail],
+        dealId DealResult.id
+    }}
+    
+    shouldCreateTask --> "SkipTask" console.log("✓ Branch A: No task needed")
+
     shouldCreateDeal --> "NoDeal" {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id}}
     
     shouldCreateDeal --> "NoDeal" {createThreadNote {companyId CompanyResult.id, contactIds [MultiContactResult.primaryContactEmail], noteBody "📊 Lead Analysis | Score: " + LeadQualificationResult.score + " | Stage: " + LeadQualificationResult.stage + "\n\nNot yet qualified for deal creation.\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction, ownerId SDRConfig.hubspotOwnerId}}
     
     shouldCreateDeal --> "NoDeal" {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, incrementEmailCount true}}
+
+    shouldCreateDeal --> "NoDeal" recommendTask
+
+    shouldCreateDeal --> "NoDeal" shouldCreateTask
+    
+    shouldCreateTask --> "CreateTask" {createFollowUpTask {
+        taskSubject TaskRecommendation.taskSubject,
+        taskBody TaskRecommendation.taskBody,
+        dueDate now() + (TaskRecommendation.dueDateOffset * 3600000),
+        taskType TaskRecommendation.taskType,
+        priority TaskRecommendation.priority,
+        ownerId SDRConfig.hubspotOwnerId,
+        companyId CompanyResult.id,
+        contactIds [MultiContactResult.primaryContactEmail]
+    }}
+    
+    shouldCreateTask --> "SkipTask" console.log("✓ Branch B: No task needed")
 }
 
 @public agent sdrManager {
@@ -807,10 +996,8 @@ The email data is provided in the message. Execute the flow systematically."
 }
 
 workflow @after create:gmail/Email {
-    // Fetch SDR configuration
     {SDRConfig? {}} @as [config];
     
-    // Prepare email data context
     "Email thread_id: " + gmail/Email.thread_id +
     " | Sender: " + gmail/Email.sender +
     " | Recipients: " + gmail/Email.recipients +
@@ -822,7 +1009,6 @@ workflow @after create:gmail/Email {
     
     console.log("🔔 New email received: " + gmail/Email.subject);
     console.log("📧 Thread ID: " + gmail/Email.thread_id);
-    
-    // Invoke the main SDR agent
+
     {sdrManager {message emailContext}}
 }
