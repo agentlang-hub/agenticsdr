@@ -953,7 +953,7 @@ flow sdrManager {
         dealId DealResult.id
     }}
     
-    shouldCreateTask --> "SkipTask" console.log("✓ Branch A: No task needed")
+    shouldCreateTask --> "SkipTask" {skipProcessing {reason "No task needed"}}
 
     shouldCreateDeal --> "NoDeal" {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id}}
     
@@ -976,7 +976,7 @@ flow sdrManager {
         contactIds [MultiContactResult.primaryContactEmail]
     }}
     
-    shouldCreateTask --> "SkipTask" console.log("✓ Branch B: No task needed")
+    shouldCreateTask --> "SkipTask" {skipProcessing {reason "No task needed"}}
 }
 
 @public agent sdrManager {
