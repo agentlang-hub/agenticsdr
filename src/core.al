@@ -20,95 +20,32 @@ entity ThreadState {
     updatedAt DateTime @default(now())
 }
 
-record EmailRelevanceResult {
-    isRelevant Boolean,
-    reason String,
-    category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional,
-    gmailOwnerEmail String @optional,
-    hubspotOwnerId String @optional,
-    emailSender String @optional,
-    emailRecipients String @optional,
-    emailSubject String @optional,
-    emailBody String @optional,
-    emailDate String @optional,
-    emailThreadId String @optional
-}
-
 record SkipResult {
     skipped Boolean,
     reason String
 }
 
-record ExtractedContact {
-    email String,
-    name String @optional,
-    firstName String @optional,
-    lastName String @optional,
-    role String @enum("buyer", "user", "influencer", "champion", "unknown") @default("unknown")
-}
-
-record MultiContactResult {
-    contacts ExtractedContact[],
-    primaryContactEmail String @optional,
-    excludedEmails String[]
-}
-
-record CompanyResolutionResult {
-    resolved Boolean,
-    companyName String @optional,
-    domain String @optional,
-    confidence String @enum("high", "medium", "low") @default("low"),
-    source String @enum("domain", "signature", "existing", "conversation") @optional
-}
-
-record LeadQualificationResult {
-    qualified Boolean,
-    score Int,
-    stage String @enum("NEW", "ENGAGED", "QUALIFIED", "DISQUALIFIED"),
-    reasoning String,
-    nextAction String @optional
-}
-
-record DealStageResult {
-    stage String @enum("DISCOVERY", "MEETING", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST"),
-    reasoning String,
-    confidence String @enum("high", "medium", "low"),
-    shouldCreateDeal Boolean
-}
-
-record MeetingInfo {
-    title String,
+record EmailData {
+    sender String,
+    recipients String,
+    subject String,
     body String,
     date String,
-    participants String[]
+    threadId String,
+    gmailOwnerEmail String,
+    hubspotOwnerId String
 }
 
-record CompanyResult {
-    id String,
-    domain String @optional,
-    name String @optional
+record SDRProcessingCheck {
+    needsProcessing Boolean,
+    reason String,
+    category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional
 }
 
-record DealResult {
-    id String,
-    dealName String @optional,
-    dealStage String @optional
-}
-
-record TaskRecommendation {
-    shouldCreateTask Boolean,
-    taskType String @enum("EMAIL", "CALL", "TODO"),
-    taskSubject String,
-    taskBody String,
-    priority String @enum("LOW", "MEDIUM", "HIGH"),
-    dueDateOffset Int,
-    reasoning String
-}
-
-agent filterEmailRelevance {
+agent EmailSDRProcessing {
     llm "sonnet_llm",
-    role "You are an intelligent email filter that protects the CRM from irrelevant noise.",
-    instruction "Analyze the email to determine if it should be processed in the CRM.
+    role "You are an intelligent email filter that determines if an email needs SDR processing.",
+    instruction "Analyze the email to determine if it should be processed by the SDR system.
 
 INPUT DATA:
 - Sender: {{EmailData.sender}}
@@ -119,7 +56,7 @@ INPUT DATA:
 
 CLASSIFICATION RULES:
 
-✅ RELEVANT (isRelevant: true) - Process if:
+✅ NEEDS PROCESSING (needsProcessing: true) - Process if:
 - Business discussion with clients/prospects
 - Meeting coordination or scheduling
 - Sales conversation or proposal
@@ -128,1069 +65,393 @@ CLASSIFICATION RULES:
 - Question about products/services
 - Demo request or trial discussion
 
-❌ IRRELEVANT (isRelevant: false) - Skip if:
+❌ SKIP (needsProcessing: false) - Skip if:
 - Automated sender (contains: no-reply, noreply, automated, donotreply)
 - Newsletter or digest (subject contains: unsubscribe, newsletter, digest)
 - Marketing blast or promotional email
 - System notification (password reset, account alert)
-- Internal team communication (if all participants are from same domain as owner)
+- Internal team communication (if all participants are from same domain)
 - Spam or suspicious content
 - Out of office replies
 
 RETURN FORMAT:
-if it should be processed:
-
 {
-  \"isRelevant\": true,
-  \"reason\": \"Brief explanation (1 sentence)\",
-  \"category\": \"business\" | \"meeting\" | \"sales\" | \"automated\" | \"newsletter\" | \"spam\" | \"unknown\",
-  \"gmailOwnerEmail\": gmail_main_owner_email,
-  \"hubspotOwnerId\": hubspot_owner_id,
-  \"emailSender\": sender,
-  \"emailRecipients\": recipients,
-  \"emailSubject\": subject,
-  \"emailBody\": body,
-  \"emailDate\": date,
-  \"emailThreadId\": thread_id
-}
-
-if it shouldn't be processed:
-
-{
- \"isRelevant\": false,
+  \"needsProcessing\": true/false,
   \"reason\": \"Brief explanation (1 sentence)\",
   \"category\": \"business\" | \"meeting\" | \"sales\" | \"automated\" | \"newsletter\" | \"spam\" | \"unknown\"
 }
 
-CRITICAL: Return ONLY the EmailRelevanceResult structure, no markdown formatting.
-
 CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
+- Return ONLY the SDRProcessingCheck structure
+- NEVER wrap response in markdown code blocks
+- NEVER use markdown formatting",
     retry classifyRetry,
-    responseSchema agenticsdr.core/EmailRelevanceResult
+    responseSchema agenticsdr.core/SDRProcessingCheck
 }
 
-agent extractMultipleContacts {
+record ExtractedContact {
+    email String,
+    name String @optional,
+    firstName String @optional,
+    lastName String @optional,
+    role String @enum("buyer", "user", "influencer", "champion", "unknown") @default("unknown")
+}
+
+record ExtractedCompany {
+    name String @optional,
+    domain String @optional,
+    confidence String @enum("high", "medium", "low", "none") @default("none"),
+    source String @enum("domain", "signature", "body", "unknown") @optional
+}
+
+record ExtractedLeadInfo {
+    contacts ExtractedContact[],
+    primaryContactEmail String @optional,
+    company ExtractedCompany,
+    emailSubject String,
+    emailBody String,
+    emailDate String,
+    emailThreadId String,
+    emailSender String,
+    emailRecipients String,
+    gmailOwnerEmail String,
+    hubspotOwnerId String
+}
+
+agent ExtractLeadInfo {
     llm "sonnet_llm",
-    role "You extract all external participants from an email conversation, excluding the Gmail owner.",
-    instruction "Extract ALL external contact information from the email thread.
+    role "You extract comprehensive lead information from emails including contacts, company details, and context.",
+    instruction "Extract ALL relevant lead information from the email.
 
 INPUT DATA:
-- Sender: {{EmailRelevanceResult.emailSender}}
-- Recipients: {{EmailRelevanceResult.emailRecipients}}
-- Body: {{EmailRelevanceResult.emailBody}}
-- Gmail Owner Email: {{EmailRelevanceResult.gmailOwnerEmail}}
+- Sender: {{EmailData.sender}}
+- Recipients: {{EmailData.recipients}}
+- Subject: {{EmailData.subject}}
+- Body: {{EmailData.body}}
+- Date: {{EmailData.date}}
+- Thread ID: {{EmailData.threadId}}
+- Gmail Owner: {{EmailData.gmailOwnerEmail}}
+- HubSpot Owner ID: {{EmailData.hubspotOwnerId}}
 
-EXTRACTION RULES:
+EXTRACTION TASKS:
 
-1. Parse email addresses and names from:
-   - Sender field (format: 'Name <email@domain.com>' or just 'email@domain.com')
-   - Recipients field (may contain multiple, comma-separated)
-   - CC recipients (if present)
+1. CONTACTS - Extract all external participants:
+   - Parse: 'Name <email@domain.com>' or 'email@domain.com'
+   - Extract: email, name, firstName, lastName
+   - Determine role: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
+   - EXCLUDE the Gmail owner email
+   - Identify primaryContactEmail (main external stakeholder)
 
-2. EXCLUDE the Gmail owner:
-   - {{EmailRelevanceResult.gmailOwnerEmail}} is the USER, NOT a contact
-   - Do NOT include this email in the contacts list
+2. COMPANY - Identify the company:
+   
+   COMMON PERSONAL EMAIL DOMAINS (DO NOT USE AS COMPANY):
+   - gmail.com, googlemail.com, outlook.com, hotmail.com, live.com
+   - yahoo.com, ymail.com, fastmail.com, fastmail.fm
+   - protonmail.com, proton.me, icloud.com, me.com, mac.com
+   - aol.com, mail.com, email.com
+   
+   STRATEGY (in order):
+   a) Check email signature for company name (high confidence, source: signature)
+   b) Look for explicit company mentions in body (medium confidence, source: body)
+   c) Extract from business email domain (high confidence, source: domain)
+      - SKIP if domain is in personal email list
+      - Example: alice@acme.com → domain: acme.com, name: Acme
+   
+   If NO company found:
+   - Set confidence: \"none\"
+   - Set name and domain to empty string
 
-3. For each external participant, extract:
-   - email (required)
-   - full name (if available from 'Name <email>' format)
-   - firstName (split from name)
-   - lastName (split from name, can be empty)
-   - role (infer from email content and context):
-     * 'buyer' - decision maker, executive, mentions budget/approval
-     * 'champion' - enthusiastic supporter, internal advocate
-     * 'influencer' - provides input, evaluates options
-     * 'user' - end user, technical evaluator
-     * 'unknown' - cannot determine role
-
-4. Determine primaryContactEmail:
-   - If sender is external → primaryContactEmail = sender
-   - If recipients contain external emails → primaryContactEmail = first external recipient
-   - Primary contact is the main stakeholder
-
-5. List all excluded emails (including Gmail owner)
+3. CONTEXT - Preserve email metadata:
+   - emailSubject, emailBody, emailDate, emailThreadId
+   - emailSender, emailRecipients
+   - gmailOwnerEmail, hubspotOwnerId
 
 RETURN FORMAT:
 {
   \"contacts\": [
-    {\"email\": \"actual@email.com\", \"name\": \"John Doe\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"role\": \"buyer\"},
-    {\"email\": \"another@email.com\", \"name\": \"Jane Smith\", \"firstName\": \"Jane\", \"lastName\": \"Smith\", \"role\": \"user\"}
+    {\"email\": \"john@acme.com\", \"name\": \"John Doe\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"role\": \"buyer\"}
   ],
-  \"primaryContactEmail\": \"actual@email.com\",
-  \"excludedEmails\": [\"{{EmailRelevanceResult.gmailOwnerEmail}}\"]
-}
-
-CRITICAL RULES:
-- Use ACTUAL data from the email, not examples
-- Do NOT include {{EmailRelevanceResult.gmailOwnerEmail}} in contacts
-- If name not in email format, try to find in signature or body
-- Return empty array if no external contacts found
-- Return ONLY the MultiContactResult structure, no markdown
-
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
-    retry classifyRetry,
-    responseSchema agenticsdr.core/MultiContactResult
-}
-
-agent resolveCompany {
-    llm "sonnet_llm",
-    role "You identify the company/account associated with an email conversation.",
-    instruction "Determine which company this conversation is with.
-
-INPUT DATA:
-- Contacts: {{MultiContactResult.contacts}}
-- Primary Contact Email: {{MultiContactResult.primaryContactEmail}}
-- Email Body: {{EmailData.body}}
-- Email Signature: (look for company name in body/signature)
-
-COMMON PERSONAL EMAIL DOMAINS (DO NOT USE AS COMPANY):
-- gmail.com, googlemail.com
-- outlook.com, hotmail.com, live.com
-- yahoo.com, ymail.com
-- fastmail.com, fastmail.fm
-- protonmail.com, proton.me
-- icloud.com, me.com, mac.com
-- aol.com
-- mail.com, email.com
-
-If the email domain is from this list, you MUST look for company information in the email signature or body. If no company information is found, set resolved: false.
-
-RESOLUTION STRATEGY (try in order):
-
-1. SIGNATURE PARSING (highest priority for personal emails)
-   - Look for company name in email signature
-   - Common patterns:
-     * Line with just company name
-     * Line with title + company (e.g., \"CEO at Acme Corp\")
-     * Footer with company information
-
-2. EXPLICIT MENTION (high priority for personal emails)
-   - Company name mentioned in body
-   - Phrases like \"At [Company]\" or \"[Company] team\"
-   - \"I work at [Company]\" or \"I'm with [Company]\"
-
-3. DOMAIN MATCHING (only for business domains)
-   - Extract domain from primary contact email
-   - Example: alice@acme.com → domain: acme.com, name: Acme
-   - Clean up domain name (remove .com, capitalize)
-   - SKIP if domain is in the common personal email list above
-
-4. CONVERSATION DOMINANCE (fallback)
-   - If multiple external domains, choose most frequent
-   - Example: 3 from acme.com, 1 from other.com → acme.com
-   - SKIP domains in the common personal email list
-
-RETURN FORMAT:
-{
-  \"resolved\": true/false,
-  \"companyName\": \"Acme Corp\" (human-readable name),
-  \"domain\": \"acme.com\" (canonical domain, can be empty if personal email),
-  \"confidence\": \"high\" | \"medium\" | \"low\",
-  \"source\": \"domain\" | \"signature\" | \"existing\" | \"conversation\"
+  \"primaryContactEmail\": \"john@acme.com\",
+  \"company\": {
+    \"name\": \"Acme Corp\",
+    \"domain\": \"acme.com\",
+    \"confidence\": \"high\",
+    \"source\": \"domain\"
+  },
+  \"emailSubject\": \"...\",
+  \"emailBody\": \"...\",
+  \"emailDate\": \"...\",
+  \"emailThreadId\": \"...\",
+  \"emailSender\": \"...\",
+  \"emailRecipients\": \"...\",
+  \"gmailOwnerEmail\": \"...\",
+  \"hubspotOwnerId\": \"...\"
 }
 
 RULES:
-- If email is from personal domain AND no company found in signature/body, set resolved: false
-- Do NOT use personal email domains (gmail.com, outlook.com, etc.) as company names
-- Do NOT guess company names
-- Use actual domain from email addresses ONLY if it's a business domain
-- Clean domain: remove www, .com/etc for name generation
-- Return ONLY the CompanyResolutionResult structure, no markdown
+- Use ACTUAL data from email
+- Do NOT include Gmail owner in contacts
+- For personal emails without company, set company.confidence to \"none\"
+- Return ONLY the ExtractedLeadInfo structure
 
 CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
+- NEVER wrap response in markdown code blocks
+- NEVER use markdown formatting",
     retry classifyRetry,
-    responseSchema agenticsdr.core/CompanyResolutionResult
+    responseSchema agenticsdr.core/ExtractedLeadInfo
 }
 
-agent qualifyLead {
+record HubSpotContext {
+    existingCompanyId String @optional,
+    existingCompanyName String @optional,
+    existingContactId String @optional,
+    existingDealId String @optional,
+    threadStateExists Boolean @default(false),
+    threadStateLeadStage String @default("NEW"),
+    threadStateEmailCount Int @default(0),
+    hasCompany Boolean @default(false),
+    hasContact Boolean @default(false),
+    hasDeal Boolean @default(false)
+}
+
+@public event fetchHubSpotContext {
+    companyDomain String @optional,
+    contactEmail String @optional,
+    threadId String
+}
+
+workflow fetchHubSpotContext {
+    {ThreadState {threadId? fetchHubSpotContext.threadId}} @as threadStates;
+    {hubspot/Company {domain? fetchHubSpotContext.companyDomain}} @as companies;
+    {hubspot/Contact {email? fetchHubSpotContext.contactEmail}} @as contacts;
+    
+    threadStates @as [ts, __];
+    companies @as [comp, __];
+    contacts @as [cont, __];
+    
+    {HubSpotContext {
+        existingCompanyId comp.id,
+        existingCompanyName comp.name,
+        existingContactId cont.id,
+        threadStateExists threadStates.length > 0,
+        threadStateLeadStage ts.leadStage,
+        threadStateEmailCount ts.emailCount,
+        hasCompany companies.length > 0,
+        hasContact contacts.length > 0
+    }}
+}
+
+record LeadAnalysis {
+    leadStage String @enum("NEW", "ENGAGED", "QUALIFIED", "DISQUALIFIED"),
+    leadScore Int,
+    dealStage String @enum("DISCOVERY", "MEETING", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST", "NONE") @default("NONE"),
+    shouldCreateDeal Boolean,
+    shouldCreateContact Boolean,
+    shouldCreateCompany Boolean,
+    reasoning String,
+    nextAction String,
+    confidence String @enum("high", "medium", "low")
+}
+
+agent LeadAnalysis {
     llm "sonnet_llm",
-    role "You qualify leads based on email conversations to determine if they are sales-worthy.",
-    instruction "Evaluate this company/lead based on the conversation.
+    role "You analyze lead information and existing CRM context to determine lead stage, deal stage, and next actions.",
+    instruction "Analyze the lead based on the extracted email information and existing HubSpot context.
 
 INPUT DATA:
-- Company: {{CompanyResolutionResult.companyName}}
-- Contacts: {{MultiContactResult.contacts}}
-- Email Subject: {{EmailData.subject}}
-- Email Body: {{EmailData.body}}
-- Thread Email Count: {{ThreadState.emailCount}}
-- Current Lead Stage: {{ThreadState.leadStage}}
 
-QUALIFICATION CRITERIA:
+EXTRACTED FROM EMAIL:
+- Contacts: {{ExtractedLeadInfo.contacts}}
+- Primary Contact: {{ExtractedLeadInfo.primaryContactEmail}}
+- Company Name: {{ExtractedLeadInfo.company.name}}
+- Company Domain: {{ExtractedLeadInfo.company.domain}}
+- Company Confidence: {{ExtractedLeadInfo.company.confidence}}
+- Email Subject: {{ExtractedLeadInfo.emailSubject}}
+- Email Body: {{ExtractedLeadInfo.emailBody}}
+
+EXISTING HUBSPOT CONTEXT:
+- Has Existing Company: {{HubSpotContext.hasCompany}}
+- Existing Company ID: {{HubSpotContext.existingCompanyId}}
+- Has Existing Contact: {{HubSpotContext.hasContact}}
+- Has Existing Deal: {{HubSpotContext.hasDeal}}
+- Thread State Exists: {{HubSpotContext.threadStateExists}}
+- Previous Lead Stage: {{HubSpotContext.threadStateLeadStage}}
+- Email Count: {{HubSpotContext.threadStateEmailCount}}
+
+ANALYSIS TASKS:
+
+1. LEAD STAGE ASSESSMENT:
 
 Score (0-100):
-+40: Explicit buying intent (mentions: purchase, buy, pricing, contract)
++40: Explicit buying intent (purchase, buy, pricing, contract)
 +30: Meeting request or scheduled call
-+20: Product/feature questions indicating evaluation
-+20: Multiple stakeholders involved (>1 contact)
-+15: Response to outreach (shows engagement)
-+10: Detailed technical questions
-+10: Timeline mentioned (urgency)
--20: Just saying thanks/acknowledgment
--30: Unsubscribe or not interested
--50: Spam or irrelevant
++20: Product/feature questions
++20: Multiple stakeholders
++15: Response to outreach
++10: Technical questions
++10: Timeline mentioned
+-20: Just acknowledgment
+-30: Unsubscribe/not interested
+-50: Spam
 
-Stage Assessment:
-- NEW (0-20): Initial contact, no clear intent
-- ENGAGED (21-50): Active conversation, some interest
-- QUALIFIED (51-100): Strong buying signals, ready for deal
-- DISQUALIFIED (<0): Not interested, spam, bad fit
+Stage:
+- NEW (0-20): Initial contact
+- ENGAGED (21-50): Active conversation
+- QUALIFIED (51-100): Strong buying signals
+- DISQUALIFIED (<0): Not interested
 
-Next Action Suggestions:
-- QUALIFIED: \"Create deal and move to discovery\"
-- ENGAGED: \"Continue nurturing, share case study\"
-- NEW: \"Send follow-up email with value proposition\"
-- DISQUALIFIED: \"Mark as closed-lost, stop outreach\"
+Consider PREVIOUS lead stage - progress forward unless clear regression.
+
+2. DEAL STAGE ASSESSMENT:
+
+- DISCOVERY: \"Tell me about\", \"How does\", feature questions
+- MEETING: \"Schedule\", \"Demo\", confirmed calls
+- PROPOSAL: \"Pricing\", \"Quote\", \"Contract\"
+- NEGOTIATION: \"Legal review\", \"Discount\", approvals
+- CLOSED_WON: \"Signed\", \"Purchase order\"
+- CLOSED_LOST: \"Going with competitor\"
+- NONE: No deal signals
+
+shouldCreateDeal = true IF:
+- Lead stage is QUALIFIED
+- Deal stage >= DISCOVERY
+- No existing deal
+
+3. NEXT ACTION:
+Recommend specific follow-up action.
+
+4. CREATE FLAGS:
+- shouldCreateContact: true if no existing contact
+- shouldCreateCompany: true if no existing company AND company.confidence is high or medium
 
 RETURN FORMAT:
 {
-  \"qualified\": true (if score >= 51),
-  \"score\": 75,
-  \"stage\": \"QUALIFIED\",
-  \"reasoning\": \"Customer explicitly asked for pricing and demo. Multiple stakeholders involved.\",
-  \"nextAction\": \"Create deal and schedule discovery call\"
+  \"leadStage\": \"QUALIFIED\",
+  \"leadScore\": 75,
+  \"dealStage\": \"PROPOSAL\",
+  \"shouldCreateDeal\": true,
+  \"shouldCreateContact\": true,
+  \"shouldCreateCompany\": true,
+  \"reasoning\": \"Customer asked for pricing with timeline.\",
+  \"nextAction\": \"Send pricing proposal and schedule demo\",
+  \"confidence\": \"high\"
 }
 
 RULES:
 - Be conservative with scoring
-- Previous stage context matters (cannot go from DISQUALIFIED to QUALIFIED without strong evidence)
-- Return ONLY the LeadQualificationResult structure, no markdown
+- Consider conversation history
+- Return ONLY the LeadAnalysis structure
 
 CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
+- NEVER wrap response in markdown code blocks
+- NEVER use markdown formatting",
     retry classifyRetry,
-    responseSchema agenticsdr.core/LeadQualificationResult
+    responseSchema agenticsdr.core/LeadAnalysis
 }
 
-agent classifyDealStage {
-    llm "sonnet_llm",
-    role "You analyze sales conversations to determine the appropriate deal stage.",
-    instruction "Determine the deal stage based on conversation signals.
+agent UpdateCRM {
+    llm "gpt_llm",
+    role "You are a CRM update agent that creates and executes a plan to update HubSpot based on lead analysis.",
+    instruction "Based on the lead analysis and existing HubSpot context, create and execute a plan to update the CRM.
 
 INPUT DATA:
-- Email Subject: {{EmailData.subject}}
-- Email Body: {{EmailData.body}}
-- Current Deal Stage: {{ThreadState.dealStage}}
-- Lead Stage: {{ThreadState.leadStage}}
-- Thread Email Count: {{ThreadState.emailCount}}
 
-STAGE DEFINITIONS:
-
-🔍 DISCOVERY (Initial exploration)
-- Signals: \"Tell me about\", \"How does it work\", \"What are the options\"
-- Customer is learning about solution
-- Questions about features, use cases, fit
-
-📅 MEETING (Formal engagement scheduled/completed)
-- Signals: \"Let's schedule\", \"Demo\", \"Call confirmed\", \"Meeting notes\"
-- Calendar invite sent/received
-- Formal presentation or demo occurred
-
-📄 PROPOSAL (Commercial discussion)
-- Signals: \"Pricing\", \"Quote\", \"Proposal\", \"Terms\", \"Contract\"
-- Specific pricing shared
-- Commercial terms discussed
-- MSA or contract mentioned
-
-🤝 NEGOTIATION (Final details)
-- Signals: \"Legal review\", \"Negotiate\", \"Discount\", \"Final approval\"
-- Back-and-forth on terms
-- Stakeholder approvals happening
-- Close date discussed
-
-✅ CLOSED_WON (Deal won)
-- Signals: \"Contract signed\", \"Purchase order\", \"Let's proceed\", \"Approved\"
-- Clear commitment to buy
-- Signed agreement
-
-❌ CLOSED_LOST (Deal lost)
-- Signals: \"Going with competitor\", \"Not moving forward\", \"Budget cut\"
-- Explicit rejection
-- Went with alternative
-
-STAGE PROGRESSION RULES:
-- Stages must progress forward (cannot skip)
-- Exception: Can jump to CLOSED_LOST from any stage
-- Cannot reopen CLOSED deals
-- Deal should only be created if stage >= DISCOVERY
-
-RETURN FORMAT:
-{
-  \"stage\": \"MEETING\",
-  \"reasoning\": \"Demo scheduled for next Tuesday. Customer confirmed attendance.\",
-  \"confidence\": \"high\",
-  \"shouldCreateDeal\": true (only if lead is QUALIFIED and stage >= DISCOVERY)
-}
-
-RULES:
-- Be conservative with stage progression
-- If unsure, keep current stage
-- shouldCreateDeal = true only if: leadStage == QUALIFIED AND stage >= DISCOVERY
-- Return ONLY the DealStageResult structure, no markdown
-
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
-    retry classifyRetry,
-    responseSchema agenticsdr.core/DealStageResult
-}
-
-agent extractMeetingInfo {
-    llm "sonnet_llm",
-    role "You extract meeting information from emails to log in CRM.",
-    instruction "Extract meeting details from the email.
-
-INPUT DATA:
-- Subject: {{EmailData.subject}}
-- Body: {{EmailData.body}}
-- Date: {{EmailData.date}}
-- Participants: {{MultiContactResult.contacts}}
-
-EXTRACTION RULES:
-
-Title:
-- Use email subject if it's descriptive
-- If subject is \"Re: ...\" or generic, create a better title
-- Format: \"[Meeting Type] with [Company]\"
-- Examples: \"Demo Call with Acme Corp\", \"Discovery Meeting - Q1 Planning\"
-
-Body:
-- Summarize the email content
-- Highlight key points, decisions, action items
-- Format as structured summary:
-  * Overview: [1-2 sentence summary]
-  * Key Discussion Points: [bullet list]
-  * Action Items: [numbered list if present]
-  * Next Steps: [what happens next]
-- Keep it concise but informative
-
-Date:
-- Use the email date/time
-- Keep in ISO 8601 format
-
-Participants:
-- List all contact emails from MultiContactResult
-
-RETURN FORMAT:
-{
-  \"title\": \"Discovery Call with Acme Corp\",
-  \"body\": \"Overview: Initial discovery call...\n\nKey Points:\n- Discussed current workflow...\",
-  \"date\": \"2024-01-15T10:30:00Z\",
-  \"participants\": [\"contact@acme.com\", \"another@acme.com\"]
-}
-
-RULES:
-- Always generate a meaningful title
-- Summary should be CRM-appropriate (professional)
-- Return ONLY the MeetingInfo structure, no markdown
-
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
-    retry classifyRetry,
-    responseSchema agenticsdr.core/MeetingInfo
-}
-
-agent recommendTask {
-    llm "sonnet_llm",
-    role "You analyze sales conversations and recommend follow-up tasks for the sales team.",
-    instruction "Determine if a follow-up task is needed and what type of action should be taken.
-
-INPUT DATA:
-- Email Subject: {{EmailData.subject}}
-- Email Body: {{EmailData.body}}
-- Lead Score: {{LeadQualificationResult.score}}
-- Lead Stage: {{LeadQualificationResult.stage}}
-- Next Action: {{LeadQualificationResult.nextAction}}
-- Deal Stage: {{DealStageResult.stage}}
-- Company Name: {{CompanyResolutionResult.companyName}}
-
-TASK DECISION RULES:
-
-🎯 ALWAYS CREATE A TASK IF:
-1. Customer asks a question that needs response
-2. Customer requests information (pricing, demo, docs)
-3. Lead is QUALIFIED (score >= 51)
-4. Deal is active (not CLOSED_WON or CLOSED_LOST)
-5. Customer mentions next steps or timeline
-6. Follow-up is explicitly needed
-
-❌ DO NOT CREATE TASK IF:
-1. Email is just acknowledgment (\"Thanks!\", \"Got it!\")
-2. Deal is CLOSED_WON or CLOSED_LOST
-3. Lead is DISQUALIFIED
-4. Thread is concluded (no action needed)
-
-TASK TYPE SELECTION:
-
-📧 EMAIL:
-- Customer asked specific questions
-- Need to send information/documents
-- Following up on proposal
-- Nurturing engagement
-- Default choice for most follow-ups
-
-📞 CALL:
-- Customer explicitly requested a call
-- Deal in MEETING or NEGOTIATION stage
-- High-value qualified lead (score >= 70)
-- Complex questions better handled by phone
-- Urgent timeline mentioned
-
-✅ TODO:
-- Internal tasks (prepare proposal, check availability)
-- Research needed before responding
-- Administrative follow-up
-
-PRIORITY DETERMINATION:
-
-🔴 HIGH:
-- Qualified lead (score >= 51)
-- Deal in PROPOSAL or NEGOTIATION stage
-- Customer requested urgent response
-- Hot buying signals
-- Multiple stakeholders engaged
-
-🟡 MEDIUM:
-- Engaged lead (score 21-50)
-- Deal in DISCOVERY or MEETING stage
-- Normal follow-up
-- Standard timeline
-- Default priority
-
-🟢 LOW:
-- New lead (score 0-20)
-- Early stage exploration
-- No urgency indicated
-- Educational content request
-
-DUE DATE OFFSET (in hours from now):
-- HIGH priority: 4 hours (same day response)
-- MEDIUM priority: 24 hours (next business day)
-- LOW priority: 72 hours (within 3 days)
-- CALL tasks: always 24 hours (schedule coordination needed)
-
-TASK SUBJECT FORMAT:
-\"[ACTION] [COMPANY] - [BRIEF CONTEXT]\"
-
-Examples:
-- \"Call Acme Corp - Discuss pricing and implementation\"
-- \"Email TechStart - Answer security questions\"
-- \"Follow up GlobalCo - Send case studies\"
-
-TASK BODY CONTENT:
-Provide context for the assigned person:
-- What triggered this task (summary of email)
-- What action is needed
-- Any specific details to address
-- Next steps or desired outcome
-
-Example:
-\"Customer asked about enterprise pricing and SOC2 compliance in their latest email. They mentioned Q1 budget cycle and need information by Friday.
-
-Action needed: Send enterprise pricing sheet and link to security documentation.
-
-Key points to address:
-- Volume pricing for 500+ users
-- SOC2 certification status
-- Implementation timeline
-
-Next step: Schedule demo call if they show interest.\"
-
-RETURN FORMAT:
-{
-  \"shouldCreateTask\": true,
-  \"taskType\": \"EMAIL\",
-  \"taskSubject\": \"Email Acme Corp - Pricing and security info\",
-  \"taskBody\": \"[Detailed context as described above]\",
-  \"priority\": \"HIGH\",
-  \"dueDateOffset\": 4,
-  \"reasoning\": \"Customer is qualified lead (score 75) asking specific questions about pricing. High priority due to mentioned Q1 budget timeline.\"
-}
-
-RULES:
-- Be practical: if unclear whether task is needed, create it (better safe than sorry)
-- Task should be actionable and clear
-- Consider the full conversation context
-- Return ONLY the TaskRecommendation structure, no markdown
-
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap your response in markdown code blocks (``` or ``)
-- NEVER use markdown formatting in your response
-- NEVER add JSON formatting with backticks
-- Do NOT add any markdown syntax, language identifiers, or code fences",
-    retry classifyRetry,
-    responseSchema agenticsdr.core/TaskRecommendation
-}
-
-event findOrCreateCompany {
-    domain String,
-    name String
-}
-
-workflow findOrCreateCompany {
-    
-    if (findOrCreateCompany.domain) {
-        if (findOrCreateCompany.domain != "") {
-            {hubspot/Company {domain? findOrCreateCompany.domain}} @as companies;
-            
-            if (companies.length > 0) {
-                companies @as [company];
-                {CompanyResult {
-                    id company.id,
-                    domain company.domain,
-                    name company.name
-                }}
-            } else {
-                {hubspot/Company {
-                    domain findOrCreateCompany.domain,
-                    name findOrCreateCompany.name,
-                    lifecycle_stage "lead",
-                    lead_status "NEW",
-                    ai_lead_score 0
-                }} @as newCompany;
-
-                {CompanyResult {
-                    id newCompany.id,
-                    domain newCompany.domain,
-                    name newCompany.name
-                }}
-            }
-        } else {
-            {CompanyResult {
-                id "no-company",
-                domain "",
-                name "Individual Contact"
-            }}
-        }
-    } else {
-        {CompanyResult {
-            id "no-company",
-            domain "",
-            name "Individual Contact"
-        }}
-    }
-}
-
-event updateCompanyLeadStage {
-    companyId String,
-    leadStage String,
-    leadScore Int
-}
-
-workflow updateCompanyLeadStage {
-    if (updateCompanyLeadStage.companyId == "no-company") {
-        {SkipResult {
-            skipped true,
-            reason "No company to update (personal email domain)"
-        }}
-    } else {
-        if (updateCompanyLeadStage.leadStage == "QUALIFIED") {
-            "salesqualifiedlead" @as lifecycleStage;
-            "IN_PROGRESS" @as leadStatus
-        } else if (updateCompanyLeadStage.leadStage == "ENGAGED") {
-            "marketingqualifiedlead" @as lifecycleStage;
-            "OPEN" @as leadStatus
-        } else if (updateCompanyLeadStage.leadStage == "NEW") {
-            "lead" @as lifecycleStage;
-            "NEW" @as leadStatus
-        } else {
-            "other" @as lifecycleStage;
-            "UNQUALIFIED" @as leadStatus
-        };
-        
-        {hubspot/Company {
-            id? updateCompanyLeadStage.companyId,
-            lifecycle_stage lifecycleStage,
-            lead_status leadStatus,
-            ai_lead_score updateCompanyLeadStage.leadScore
-        }}
-    }
-}
-
-event ensureContact {
-    email String,
-    firstName String,
-    lastName String,
-    companyId String @optional
-}
-
-workflow ensureContact {
-    {hubspot/Contact {email? ensureContact.email}} @as foundContacts;
-    
-    if (foundContacts.length > 0) {
-        foundContacts @as [contact];
-        contact
-    } else {
-        // Create new contact with optional company association
-        if (ensureContact.companyId) {
-            if (ensureContact.companyId != "no-company") {
-                {hubspot/Contact {
-                    email ensureContact.email,
-                    first_name ensureContact.firstName,
-                    last_name ensureContact.lastName,
-                    company ensureContact.companyId
-                }}
-            } else {
-                {hubspot/Contact {
-                    email ensureContact.email,
-                    first_name ensureContact.firstName,
-                    last_name ensureContact.lastName
-                }}
-            }
-        } else {
-            {hubspot/Contact {
-                email ensureContact.email,
-                first_name ensureContact.firstName,
-                last_name ensureContact.lastName
-            }}
-        }
-    }
-}
-
-event ensureMultipleContacts {
-    contacts String,
-    companyId String @optional
-}
-
-event findOrCreateThreadState {
-    threadId String
-}
-
-workflow findOrCreateThreadState {
-    {ThreadState {threadId? findOrCreateThreadState.threadId}} @as states;
-    
-    if (states.length > 0) {
-        states @as [state];
-        state
-    } else {
-        {ThreadState {
-            threadId findOrCreateThreadState.threadId,
-            leadStage "NEW"
-        }}
-    }
-}
-
-event updateThreadState {
-    threadId String,
-    contactIds String[] @optional,
-    companyId String @optional,
-    companyName String @optional,
-    leadStage String @optional,
-    dealId String @optional,
-    dealStage String @optional,
-    incrementEmailCount Boolean @default(false)
-}
-
-workflow updateThreadState {
-    {ThreadState {threadId? updateThreadState.threadId}} @as [existingState];
-    
-    {ThreadState {
-        threadId? updateThreadState.threadId,
-        contactIds updateThreadState.contactIds,
-        companyId updateThreadState.companyId,
-        companyName updateThreadState.companyName,
-        leadStage updateThreadState.leadStage,
-        dealId updateThreadState.dealId,
-        dealStage updateThreadState.dealStage,
-        emailCount existingState.emailCount + 1,
-        lastActivity now(),
-        updatedAt now()
-    }}
-}
-
-event ensureDeal {
-    companyId String,
-    dealStage String,
-    dealName String,
-    contactIds String[],
-    ownerId String
-}
-
-workflow ensureDeal {
-    if (ensureDeal.companyId) {
-        if (ensureDeal.companyId != "no-company") {
-            {hubspot/Deal {
-                deal_name ensureDeal.dealName,
-                deal_stage ensureDeal.dealStage,
-                owner ensureDeal.ownerId,
-                associated_company ensureDeal.companyId,
-                associated_contacts ensureDeal.contactIds,
-                description "Deal created from email thread"
-            }} @as createdDeal;
-            
-            {hubspot/Note {
-                note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Created via Agentic SDR from email thread.",
-                owner ensureDeal.ownerId,
-                associated_company ensureDeal.companyId,
-                associated_contacts ensureDeal.contactIds,
-                associated_deal createdDeal.id
-            }};
-            
-            {DealResult {
-                id createdDeal.id,
-                dealName createdDeal.deal_name,
-                dealStage createdDeal.deal_stage
-            }}
-        } else {
-            {hubspot/Deal {
-                deal_name ensureDeal.dealName,
-                deal_stage ensureDeal.dealStage,
-                owner ensureDeal.ownerId,
-                associated_contacts ensureDeal.contactIds,
-                description "Deal created from email thread (individual contact, no company)"
-            }} @as createdDeal;
-            
-            {hubspot/Note {
-                note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Individual contact without company. Created via Agentic SDR from email thread.",
-                owner ensureDeal.ownerId,
-                associated_contacts ensureDeal.contactIds,
-                associated_deal createdDeal.id
-            }};
-            
-            {DealResult {
-                id createdDeal.id,
-                dealName createdDeal.deal_name,
-                dealStage createdDeal.deal_stage
-            }}
-        }
-    } else {
-        {hubspot/Deal {
-            deal_name ensureDeal.dealName,
-            deal_stage ensureDeal.dealStage,
-            owner ensureDeal.ownerId,
-            associated_contacts ensureDeal.contactIds,
-            description "Deal created from email thread (individual contact, no company)"
-        }} @as createdDeal;
-        
-        {hubspot/Note {
-            note_body "Deal created: " + ensureDeal.dealName + " (Stage: " + ensureDeal.dealStage + "). Individual contact without company. Created via Agentic SDR from email thread.",
-            owner ensureDeal.ownerId,
-            associated_contacts ensureDeal.contactIds,
-            associated_deal createdDeal.id
-        }};
-        
-        {DealResult {
-            id createdDeal.id,
-            dealName createdDeal.deal_name,
-            dealStage createdDeal.deal_stage
-        }}
-    }
-}
-
-event createMeetingEngagement {
-    title String,
-    body String,
-    date String,
-    ownerId String,
-    contactIds String[],
-    companyId String @optional,
-    dealId String @optional
-}
-
-workflow createMeetingEngagement {
-    if (createMeetingEngagement.companyId) {
-        if (createMeetingEngagement.companyId != "no-company") {
-            if (createMeetingEngagement.dealId) {
-                {hubspot/Meeting {
-                    meeting_title createMeetingEngagement.title,
-                    meeting_body createMeetingEngagement.body,
-                    meeting_date createMeetingEngagement.date,
-                    owner createMeetingEngagement.ownerId,
-                    associated_contacts createMeetingEngagement.contactIds,
-                    associated_companies [createMeetingEngagement.companyId],
-                    associated_deals [createMeetingEngagement.dealId]
-                }}
-            } else {
-                {hubspot/Meeting {
-                    meeting_title createMeetingEngagement.title,
-                    meeting_body createMeetingEngagement.body,
-                    meeting_date createMeetingEngagement.date,
-                    owner createMeetingEngagement.ownerId,
-                    associated_contacts createMeetingEngagement.contactIds,
-                    associated_companies [createMeetingEngagement.companyId]
-                }}
-            }
-        } else {
-            if (createMeetingEngagement.dealId) {
-                {hubspot/Meeting {
-                    meeting_title createMeetingEngagement.title,
-                    meeting_body createMeetingEngagement.body,
-                    meeting_date createMeetingEngagement.date,
-                    owner createMeetingEngagement.ownerId,
-                    associated_contacts createMeetingEngagement.contactIds,
-                    associated_deals [createMeetingEngagement.dealId]
-                }}
-            } else {
-                {hubspot/Meeting {
-                    meeting_title createMeetingEngagement.title,
-                    meeting_body createMeetingEngagement.body,
-                    meeting_date createMeetingEngagement.date,
-                    owner createMeetingEngagement.ownerId,
-                    associated_contacts createMeetingEngagement.contactIds
-                }}
-            }
-        }
-    } else {
-        if (createMeetingEngagement.dealId) {
-            {hubspot/Meeting {
-                meeting_title createMeetingEngagement.title,
-                meeting_body createMeetingEngagement.body,
-                meeting_date createMeetingEngagement.date,
-                owner createMeetingEngagement.ownerId,
-                associated_contacts createMeetingEngagement.contactIds,
-                associated_deals [createMeetingEngagement.dealId]
-            }}
-        } else {
-            {hubspot/Meeting {
-                meeting_title createMeetingEngagement.title,
-                meeting_body createMeetingEngagement.body,
-                meeting_date createMeetingEngagement.date,
-                owner createMeetingEngagement.ownerId,
-                associated_contacts createMeetingEngagement.contactIds
-            }}
-        }
-    }
-}
-
-event createThreadNote {
-    companyId String,
-    contactIds String[],
-    noteBody String,
-    ownerId String,
-    dealId String @optional
-}
-
-workflow createThreadNote {
-    if (createThreadNote.companyId) {
-        if (createThreadNote.companyId != "no-company") {
-            {hubspot/Note {
-                note_body createThreadNote.noteBody,
-                owner createThreadNote.ownerId,
-                associated_company createThreadNote.companyId,
-                associated_contacts createThreadNote.contactIds,
-                associated_deal createThreadNote.dealId
-            }}
-        } else {
-            {hubspot/Note {
-                note_body createThreadNote.noteBody,
-                owner createThreadNote.ownerId,
-                associated_contacts createThreadNote.contactIds,
-                associated_deal createThreadNote.dealId
-            }}
-        }
-    } else {
-        {hubspot/Note {
-            note_body createThreadNote.noteBody,
-            owner createThreadNote.ownerId,
-            associated_contacts createThreadNote.contactIds,
-            associated_deal createThreadNote.dealId
-        }}
-    }
-}
-
-event createFollowUpTask {
-    taskSubject String,
-    taskBody String,
-    dueDate String,
-    taskType String @enum("EMAIL", "CALL", "TODO"),
-    priority String @enum("LOW", "MEDIUM", "HIGH"),
-    ownerId String,
-    companyId String @optional,
-    contactIds String[] @optional,
-    dealId String @optional
-}
-
-workflow createFollowUpTask {
-    if (createFollowUpTask.companyId) {
-        if (createFollowUpTask.companyId != "no-company") {
-            {hubspot/Task {
-                hs_task_subject createFollowUpTask.taskSubject,
-                hs_task_body createFollowUpTask.taskBody,
-                hs_timestamp createFollowUpTask.dueDate,
-                hubspot_owner_id createFollowUpTask.ownerId,
-                hs_task_status "NOT_STARTED",
-                hs_task_type createFollowUpTask.taskType,
-                hs_task_priority createFollowUpTask.priority,
-                associated_company createFollowUpTask.companyId,
-                associated_contacts createFollowUpTask.contactIds,
-                associated_deal createFollowUpTask.dealId
-            }}
-        } else {
-            {hubspot/Task {
-                hs_task_subject createFollowUpTask.taskSubject,
-                hs_task_body createFollowUpTask.taskBody,
-                hs_timestamp createFollowUpTask.dueDate,
-                hubspot_owner_id createFollowUpTask.ownerId,
-                hs_task_status "NOT_STARTED",
-                hs_task_type createFollowUpTask.taskType,
-                hs_task_priority createFollowUpTask.priority,
-                associated_contacts createFollowUpTask.contactIds,
-                associated_deal createFollowUpTask.dealId
-            }}
-        }
-    } else {
-        {hubspot/Task {
-            hs_task_subject createFollowUpTask.taskSubject,
-            hs_task_body createFollowUpTask.taskBody,
-            hs_timestamp createFollowUpTask.dueDate,
-            hubspot_owner_id createFollowUpTask.ownerId,
-            hs_task_status "NOT_STARTED",
-            hs_task_type createFollowUpTask.taskType,
-            hs_task_priority createFollowUpTask.priority,
-            associated_contacts createFollowUpTask.contactIds,
-            associated_deal createFollowUpTask.dealId
-        }}
-    }
-}
-
-decision isEmailRelevant {
-    case (isRelevant == true) {
-        ProcessEmail
-    }
-    case (isRelevant == false) {
-        SkipEmail
-    }
-}
-
-decision shouldQualifyLead {
-    case (qualified == true) {
-        LeadQualified
-    }
-    case (qualified == false) {
-        LeadNotQualified
-    }
-}
-
-decision shouldCreateDeal {
-    case (shouldCreateDeal == true) {
-        CreateDeal
-    }
-    case (shouldCreateDeal == false) {
-        NoDeal
-    }
-}
-
-decision shouldCreateTask {
-    case (shouldCreateTask == true) {
-        CreateTask
-    }
-    case (shouldCreateTask == false) {
-        SkipTask
-    }
+EXTRACTED INFO:
+- Contacts: {{ExtractedLeadInfo.contacts}}
+- Primary Contact: {{ExtractedLeadInfo.primaryContactEmail}}
+- Company Name: {{ExtractedLeadInfo.company.name}}
+- Company Domain: {{ExtractedLeadInfo.company.domain}}
+- Company Confidence: {{ExtractedLeadInfo.company.confidence}}
+- HubSpot Owner ID: {{ExtractedLeadInfo.hubspotOwnerId}}
+- Email Thread ID: {{ExtractedLeadInfo.emailThreadId}}
+
+EXISTING CONTEXT:
+- Has Company: {{HubSpotContext.hasCompany}}
+- Existing Company ID: {{HubSpotContext.existingCompanyId}}
+- Has Contact: {{HubSpotContext.hasContact}}
+- Existing Contact ID: {{HubSpotContext.existingContactId}}
+- Has Deal: {{HubSpotContext.hasDeal}}
+- Thread State Exists: {{HubSpotContext.threadStateExists}}
+
+LEAD ANALYSIS:
+- Lead Stage: {{LeadAnalysis.leadStage}}
+- Lead Score: {{LeadAnalysis.leadScore}}
+- Deal Stage: {{LeadAnalysis.dealStage}}
+- Should Create Deal: {{LeadAnalysis.shouldCreateDeal}}
+- Should Create Contact: {{LeadAnalysis.shouldCreateContact}}
+- Should Create Company: {{LeadAnalysis.shouldCreateCompany}}
+- Reasoning: {{LeadAnalysis.reasoning}}
+- Next Action: {{LeadAnalysis.nextAction}}
+
+YOUR TASK:
+
+Execute the following CRM updates using the available tools:
+
+1. COMPANY (if shouldCreateCompany is true):
+   - Create Company with domain and name from ExtractedLeadInfo.company
+   - Set lifecycle_stage based on leadStage
+   - Set ai_lead_score to leadScore
+
+2. CONTACT (if shouldCreateContact is true):
+   - Create Contact with email, firstName, lastName from ExtractedLeadInfo.primaryContactEmail
+   - Associate with company if it exists
+
+3. THREAD STATE:
+   - Create or update ThreadState with threadId from ExtractedLeadInfo.emailThreadId
+   - Update contactIds, companyId, leadStage, dealStage
+   - Increment emailCount if updating
+
+4. DEAL (if shouldCreateDeal is true):
+   - Create Deal with appropriate stage
+   - Associate with company and contact
+   - Create Note summarizing the deal creation
+
+5. ENGAGEMENT:
+   - Create Note with lead analysis summary
+   - Create Task for follow-up based on nextAction
+
+Use the HubSpot entities directly: hubspot/Company, hubspot/Contact, hubspot/Deal, hubspot/Note, hubspot/Task
+Use agenticsdr.core/ThreadState for thread tracking
+
+Execute each action systematically and return a summary.",
+    tools [hubspot/Company, hubspot/Contact, hubspot/Deal, hubspot/Note, hubspot/Task, agenticsdr.core/ThreadState]
 }
 
 workflow skipProcessing {
     {SkipResult {
         skipped true,
-        reason "Email filtered out (automated sender or newsletter)"
+        reason "Email does not need SDR processing"
     }}
 }
 
+decision needsSDRProcessing {
+    case (needsProcessing == true) {
+        ProcessEmail
+    }
+    case (needsProcessing == false) {
+        SkipEmail
+    }
+}
+
 flow sdrManager {
-    filterEmailRelevance --> isEmailRelevant
-    isEmailRelevant --> "SkipEmail" {skipProcessing {reason EmailRelevanceResult.reason}}
-
-    isEmailRelevant --> "ProcessEmail" extractMultipleContacts
-
-    extractMultipleContacts --> resolveCompany
-
-    resolveCompany --> {findOrCreateThreadState {threadId EmailData.threadId}}
-
-    findOrCreateThreadState --> {findOrCreateCompany {domain CompanyResolutionResult.domain, name CompanyResolutionResult.companyName}}
-
-    findOrCreateCompany --> qualifyLead
-
-    qualifyLead --> {updateCompanyLeadStage {companyId CompanyResult.id, leadStage LeadQualificationResult.stage, leadScore LeadQualificationResult.score}}
-
-    updateCompanyLeadStage --> classifyDealStage
-
-    classifyDealStage --> shouldCreateDeal
-
-    shouldCreateDeal --> extractMeetingInfo
-
-    extractMeetingInfo --> {ensureContact {email MultiContactResult.primaryContactEmail, firstName "Contact", lastName "Person", companyId CompanyResult.id}}
-
-    shouldCreateDeal --> "CreateDeal" {ensureDeal {companyId CompanyResult.id, dealStage DealStageResult.stage, dealName CompanyResolutionResult.companyName + " - " + LeadQualificationResult.stage, contactIds [MultiContactResult.primaryContactEmail], ownerId SDRConfig.hubspotOwnerId}}
-    
-    ensureDeal --> {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id, dealId DealResult.id}}
-    
-    createMeetingEngagement --> {createThreadNote {companyId CompanyResult.id, contactIds [MultiContactResult.primaryContactEmail], noteBody "✅ QUALIFIED LEAD | Score: " + LeadQualificationResult.score + " | Lead Stage: " + LeadQualificationResult.stage + " | Deal Stage: " + DealStageResult.stage + "\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction, ownerId SDRConfig.hubspotOwnerId, dealId DealResult.id}}
-    
-    createThreadNote --> {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, dealId DealResult.id, dealStage DealStageResult.stage, incrementEmailCount true}}
-
-    updateThreadState --> recommendTask
-
-    recommendTask --> shouldCreateTask
-    
-    shouldCreateTask --> "CreateTask" {createFollowUpTask {
-        taskSubject TaskRecommendation.taskSubject,
-        taskBody TaskRecommendation.taskBody,
-        dueDate now() + (TaskRecommendation.dueDateOffset * 3600000),
-        taskType TaskRecommendation.taskType,
-        priority TaskRecommendation.priority,
-        ownerId SDRConfig.hubspotOwnerId,
-        companyId CompanyResult.id,
-        contactIds [MultiContactResult.primaryContactEmail],
-        dealId DealResult.id
-    }}
-    
-    shouldCreateTask --> "SkipTask" {skipProcessing {reason "No task needed"}}
-
-    shouldCreateDeal --> "NoDeal" {createMeetingEngagement {title MeetingInfo.title, body MeetingInfo.body, date MeetingInfo.date, ownerId SDRConfig.hubspotOwnerId, contactIds [MultiContactResult.primaryContactEmail], companyId CompanyResult.id}}
-    
-    shouldCreateDeal --> "NoDeal" {createThreadNote {companyId CompanyResult.id, contactIds [MultiContactResult.primaryContactEmail], noteBody "📊 Lead Analysis | Score: " + LeadQualificationResult.score + " | Stage: " + LeadQualificationResult.stage + "\n\nNot yet qualified for deal creation.\n\nReasoning: " + LeadQualificationResult.reasoning + "\n\nNext Action: " + LeadQualificationResult.nextAction, ownerId SDRConfig.hubspotOwnerId}}
-    
-    shouldCreateDeal --> "NoDeal" {updateThreadState {threadId EmailData.threadId, companyId CompanyResult.id, companyName CompanyResolutionResult.companyName, leadStage LeadQualificationResult.stage, incrementEmailCount true}}
-
-    shouldCreateDeal --> "NoDeal" recommendTask
-
-    shouldCreateDeal --> "NoDeal" shouldCreateTask
-    
-    shouldCreateTask --> "CreateTask" {createFollowUpTask {
-        taskSubject TaskRecommendation.taskSubject,
-        taskBody TaskRecommendation.taskBody,
-        dueDate now() + (TaskRecommendation.dueDateOffset * 3600000),
-        taskType TaskRecommendation.taskType,
-        priority TaskRecommendation.priority,
-        ownerId SDRConfig.hubspotOwnerId,
-        companyId CompanyResult.id,
-        contactIds [MultiContactResult.primaryContactEmail]
-    }}
-    
-    shouldCreateTask --> "SkipTask" {skipProcessing {reason "No task needed"}}
+    EmailSDRProcessing --> needsSDRProcessing
+    needsSDRProcessing --> "SkipEmail" skipProcessing
+    needsSDRProcessing --> "ProcessEmail" ExtractLeadInfo
+    ExtractLeadInfo --> {fetchHubSpotContext {companyDomain ExtractedLeadInfo.company.domain, contactEmail ExtractedLeadInfo.primaryContactEmail, threadId ExtractedLeadInfo.emailThreadId}}
+    fetchHubSpotContext --> LeadAnalysis
+    LeadAnalysis --> UpdateCRM
 }
 
 @public agent sdrManager {
     llm "gpt_llm",
-    role "You are an intelligent SDR agent that manages the complete sales development workflow: filtering emails, extracting contacts, resolving companies, qualifying leads, and orchestrating HubSpot CRM updates.",
+    role "You are an intelligent SDR agent that manages the complete sales development workflow.",
     instruction "Process the email through the complete SDR pipeline:
     
-1. Filter for relevance
-2. Extract all external contacts
-3. Resolve the company/account
-4. Qualify the lead (company-level)
-5. Classify deal stage (if applicable)
-6. Update HubSpot CRM (companies, contacts, deals, meetings, notes)
-7. Maintain conversation state (ThreadState)
+1. Check if email needs SDR processing
+2. Extract all lead information (contacts, company, context)
+3. Fetch relevant HubSpot data (existing company, contacts, deals, thread state)
+4. Analyze lead and determine stages
+5. Update CRM with generated plan
 
 The email data is provided in the message. Execute the flow systematically."
 }
@@ -1198,17 +459,19 @@ The email data is provided in the message. Execute the flow systematically."
 workflow @after create:gmail/Email {
     {SDRConfig? {}} @as [config];
     
-    "Email thread_id: " + gmail/Email.thread_id +
-    " | Sender: " + gmail/Email.sender +
-    " | Recipients: " + gmail/Email.recipients +
-    " | Subject: " + gmail/Email.subject +
-    " | Body: " + gmail/Email.body +
-    " | Date: " + gmail/Email.date +
-    " | Gmail Owner: " + config.gmailOwnerEmail +
-    " | HubSpot Owner ID: " + config.hubspotOwnerId @as emailContext;
+    {EmailData {
+        sender gmail/Email.sender,
+        recipients gmail/Email.recipients,
+        subject gmail/Email.subject,
+        body gmail/Email.body,
+        date gmail/Email.date,
+        threadId gmail/Email.thread_id,
+        gmailOwnerEmail config.gmailOwnerEmail,
+        hubspotOwnerId config.hubspotOwnerId
+    }} @as emailData;
     
     console.log("🔔 New email received: " + gmail/Email.subject);
     console.log("📧 Thread ID: " + gmail/Email.thread_id);
 
-    {sdrManager {message emailContext}}
+    {sdrManager {message emailData}}
 }
