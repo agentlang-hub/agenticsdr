@@ -39,10 +39,18 @@ record EmailData {
 record SDRProcessingCheck {
     needsProcessing Boolean,
     reason String,
-    category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional
+    category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional,
+    sender String,
+    recipients String,
+    subject String,
+    body String,
+    date String,
+    threadId String,
+    gmailOwnerEmail String,
+    hubspotOwnerId String
 }
 
-agent EmailSDRProcessing {
+agent NeedSDRProcessing {
     llm "sonnet_llm",
     role "You are an intelligent email filter that determines if an email needs SDR processing.",
     instruction "Analyze the email to determine if it should be processed by the SDR system.
@@ -74,15 +82,24 @@ CLASSIFICATION RULES:
 - Spam or suspicious content
 - Out of office replies
 
-RETURN FORMAT:
+RETURN FORMAT (return ALL fields including email data):
 {
   \"needsProcessing\": true/false,
   \"reason\": \"Brief explanation (1 sentence)\",
-  \"category\": \"business\" | \"meeting\" | \"sales\" | \"automated\" | \"newsletter\" | \"spam\" | \"unknown\"
+  \"category\": \"business\" | \"meeting\" | \"sales\" | \"automated\" | \"newsletter\" | \"spam\" | \"unknown\",
+  \"sender\": \"{{EmailData.sender}}\",
+  \"recipients\": \"{{EmailData.recipients}}\",
+  \"subject\": \"{{EmailData.subject}}\",
+  \"body\": \"{{EmailData.body}}\",
+  \"date\": \"{{EmailData.date}}\",
+  \"threadId\": \"{{EmailData.threadId}}\",
+  \"gmailOwnerEmail\": \"{{EmailData.gmailOwnerEmail}}\",
+  \"hubspotOwnerId\": \"{{EmailData.hubspotOwnerId}}\"
 }
 
 CRITICAL OUTPUT FORMAT RULES:
-- Return ONLY the SDRProcessingCheck structure
+- Return ALL fields from SDRProcessingCheck (including email data passthrough)
+- Use actual values from EmailData for the email fields
 - NEVER wrap response in markdown code blocks
 - NEVER use markdown formatting",
     retry classifyRetry,
@@ -107,6 +124,8 @@ record ExtractedCompany {
 record ExtractedLeadInfo {
     contacts ExtractedContact[],
     primaryContactEmail String @optional,
+    primaryContactFirstName String @optional,
+    primaryContactLastName String @optional,
     company ExtractedCompany,
     emailSubject String,
     emailBody String,
@@ -124,14 +143,14 @@ agent ExtractLeadInfo {
     instruction "Extract ALL relevant lead information from the email.
 
 INPUT DATA:
-- Sender: {{EmailData.sender}}
-- Recipients: {{EmailData.recipients}}
-- Subject: {{EmailData.subject}}
-- Body: {{EmailData.body}}
-- Date: {{EmailData.date}}
-- Thread ID: {{EmailData.threadId}}
-- Gmail Owner: {{EmailData.gmailOwnerEmail}}
-- HubSpot Owner ID: {{EmailData.hubspotOwnerId}}
+- Sender: {{SDRProcessingCheck.sender}}
+- Recipients: {{SDRProcessingCheck.recipients}}
+- Subject: {{SDRProcessingCheck.subject}}
+- Body: {{SDRProcessingCheck.body}}
+- Date: {{SDRProcessingCheck.date}}
+- Thread ID: {{SDRProcessingCheck.threadId}}
+- Gmail Owner: {{SDRProcessingCheck.gmailOwnerEmail}}
+- HubSpot Owner ID: {{SDRProcessingCheck.hubspotOwnerId}}
 
 EXTRACTION TASKS:
 
@@ -172,6 +191,8 @@ RETURN FORMAT:
     {\"email\": \"john@acme.com\", \"name\": \"John Doe\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"role\": \"buyer\"}
   ],
   \"primaryContactEmail\": \"john@acme.com\",
+  \"primaryContactFirstName\": \"John\",
+  \"primaryContactLastName\": \"Doe\",
   \"company\": {
     \"name\": \"Acme Corp\",
     \"domain\": \"acme.com\",
@@ -201,47 +222,61 @@ CRITICAL OUTPUT FORMAT RULES:
     responseSchema agenticsdr.core/ExtractedLeadInfo
 }
 
-record HubSpotContext {
+record CombinedContext {
     existingCompanyId String @optional,
     existingCompanyName String @optional,
     existingContactId String @optional,
-    existingDealId String @optional,
-    threadStateExists Boolean @default(false),
-    threadStateLeadStage String @default("NEW"),
-    threadStateEmailCount Int @default(0),
     hasCompany Boolean @default(false),
     hasContact Boolean @default(false),
-    hasDeal Boolean @default(false)
+    threadStateExists Boolean @default(false),
+    threadStateLeadStage String @default("NEW"),
+    threadStateEmailCount Int @default(0)
 }
 
-@public event fetchHubSpotContext {
+event fetchCombinedContext {
     companyDomain String @optional,
     contactEmail String @optional,
     threadId String
 }
 
-workflow fetchHubSpotContext {
-    {ThreadState {threadId? fetchHubSpotContext.threadId}} @as threadStates;
-    {hubspot/Company {domain? fetchHubSpotContext.companyDomain}} @as companies;
-    {hubspot/Contact {email? fetchHubSpotContext.contactEmail}} @as contacts;
+workflow fetchCombinedContext {
+    console.log("🔍 SDR: fetchCombinedContext - companyDomain: " + fetchCombinedContext.companyDomain + ", contactEmail: " + fetchCombinedContext.contactEmail + ", threadId: " + fetchCombinedContext.threadId);
     
-    threadStates @as [ts, __];
-    companies @as [comp, __];
-    contacts @as [cont, __];
+    {hubspot/fetchCRMContext {
+        companyDomain fetchCombinedContext.companyDomain,
+        contactEmail fetchCombinedContext.contactEmail
+    }} @as crmContext;
     
-    {HubSpotContext {
-        existingCompanyId comp.id,
-        existingCompanyName comp.name,
-        existingContactId cont.id,
+    console.log("🔍 SDR: CRM Context - hasCompany: " + crmContext.hasCompany + ", hasContact: " + crmContext.hasContact);
+    console.log("🔍 SDR: Existing IDs - Company: " + crmContext.existingCompanyId + ", Contact: " + crmContext.existingContactId);
+    
+    "NEW" @as threadStateLeadStage;
+    0 @as threadStateEmailCount;
+    
+    {ThreadState {threadId? fetchCombinedContext.threadId}} @as threadStates;
+    
+    console.log("🔍 SDR: Thread query returned " + threadStates.length + " results");
+    
+    if (threadStates.length > 0) {
+        threadStates @as [ts, __];
+        ts.leadStage @as threadStateLeadStage;
+        ts.emailCount @as threadStateEmailCount;
+        console.log("🔍 SDR: Existing thread - Stage: " + threadStateLeadStage + ", Count: " + threadStateEmailCount)
+    };
+    
+    {CombinedContext {
+        existingCompanyId crmContext.existingCompanyId,
+        existingCompanyName crmContext.existingCompanyName,
+        existingContactId crmContext.existingContactId,
+        hasCompany crmContext.hasCompany,
+        hasContact crmContext.hasContact,
         threadStateExists threadStates.length > 0,
-        threadStateLeadStage ts.leadStage,
-        threadStateEmailCount ts.emailCount,
-        hasCompany companies.length > 0,
-        hasContact contacts.length > 0
+        threadStateLeadStage threadStateLeadStage,
+        threadStateEmailCount threadStateEmailCount
     }}
 }
 
-record LeadAnalysis {
+record LeadAnalysisData {
     leadStage String @enum("NEW", "ENGAGED", "QUALIFIED", "DISQUALIFIED"),
     leadScore Int,
     dealStage String @enum("DISCOVERY", "MEETING", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST", "NONE") @default("NONE"),
@@ -269,14 +304,13 @@ EXTRACTED FROM EMAIL:
 - Email Subject: {{ExtractedLeadInfo.emailSubject}}
 - Email Body: {{ExtractedLeadInfo.emailBody}}
 
-EXISTING HUBSPOT CONTEXT:
-- Has Existing Company: {{HubSpotContext.hasCompany}}
-- Existing Company ID: {{HubSpotContext.existingCompanyId}}
-- Has Existing Contact: {{HubSpotContext.hasContact}}
-- Has Existing Deal: {{HubSpotContext.hasDeal}}
-- Thread State Exists: {{HubSpotContext.threadStateExists}}
-- Previous Lead Stage: {{HubSpotContext.threadStateLeadStage}}
-- Email Count: {{HubSpotContext.threadStateEmailCount}}
+EXISTING CONTEXT:
+- Has Existing Company: {{CombinedContext.hasCompany}}
+- Existing Company ID: {{CombinedContext.existingCompanyId}}
+- Has Existing Contact: {{CombinedContext.hasContact}}
+- Thread State Exists: {{CombinedContext.threadStateExists}}
+- Previous Lead Stage: {{CombinedContext.threadStateLeadStage}}
+- Email Count: {{CombinedContext.threadStateEmailCount}}
 
 ANALYSIS TASKS:
 
@@ -340,81 +374,70 @@ RETURN FORMAT:
 RULES:
 - Be conservative with scoring
 - Consider conversation history
-- Return ONLY the LeadAnalysis structure
+- Return ONLY the LeadAnalysisData structure
 
 CRITICAL OUTPUT FORMAT RULES:
 - NEVER wrap response in markdown code blocks
 - NEVER use markdown formatting",
     retry classifyRetry,
-    responseSchema agenticsdr.core/LeadAnalysis
+    responseSchema agenticsdr.core/LeadAnalysisData
 }
 
-agent UpdateCRM {
-    llm "gpt_llm",
-    role "You are a CRM update agent that creates and executes a plan to update HubSpot based on lead analysis.",
-    instruction "Based on the lead analysis and existing HubSpot context, create and execute a plan to update the CRM.
+event updateThreadState {
+    threadId String,
+    contactEmail String,
+    companyId String @optional,
+    companyName String @optional,
+    leadStage String,
+    dealId String @optional,
+    dealStage String @optional
+}
 
-INPUT DATA:
-
-EXTRACTED INFO:
-- Contacts: {{ExtractedLeadInfo.contacts}}
-- Primary Contact: {{ExtractedLeadInfo.primaryContactEmail}}
-- Company Name: {{ExtractedLeadInfo.company.name}}
-- Company Domain: {{ExtractedLeadInfo.company.domain}}
-- Company Confidence: {{ExtractedLeadInfo.company.confidence}}
-- HubSpot Owner ID: {{ExtractedLeadInfo.hubspotOwnerId}}
-- Email Thread ID: {{ExtractedLeadInfo.emailThreadId}}
-
-EXISTING CONTEXT:
-- Has Company: {{HubSpotContext.hasCompany}}
-- Existing Company ID: {{HubSpotContext.existingCompanyId}}
-- Has Contact: {{HubSpotContext.hasContact}}
-- Existing Contact ID: {{HubSpotContext.existingContactId}}
-- Has Deal: {{HubSpotContext.hasDeal}}
-- Thread State Exists: {{HubSpotContext.threadStateExists}}
-
-LEAD ANALYSIS:
-- Lead Stage: {{LeadAnalysis.leadStage}}
-- Lead Score: {{LeadAnalysis.leadScore}}
-- Deal Stage: {{LeadAnalysis.dealStage}}
-- Should Create Deal: {{LeadAnalysis.shouldCreateDeal}}
-- Should Create Contact: {{LeadAnalysis.shouldCreateContact}}
-- Should Create Company: {{LeadAnalysis.shouldCreateCompany}}
-- Reasoning: {{LeadAnalysis.reasoning}}
-- Next Action: {{LeadAnalysis.nextAction}}
-
-YOUR TASK:
-
-Execute the following CRM updates using the available tools:
-
-1. COMPANY (if shouldCreateCompany is true):
-   - Create Company with domain and name from ExtractedLeadInfo.company
-   - Set lifecycle_stage based on leadStage
-   - Set ai_lead_score to leadScore
-
-2. CONTACT (if shouldCreateContact is true):
-   - Create Contact with email, firstName, lastName from ExtractedLeadInfo.primaryContactEmail
-   - Associate with company if it exists
-
-3. THREAD STATE:
-   - Create or update ThreadState with threadId from ExtractedLeadInfo.emailThreadId
-   - Update contactIds, companyId, leadStage, dealStage
-   - Increment emailCount if updating
-
-4. DEAL (if shouldCreateDeal is true):
-   - Create Deal with appropriate stage
-   - Associate with company and contact
-   - Create Note summarizing the deal creation
-
-5. ENGAGEMENT:
-   - Create Note with lead analysis summary
-   - Create Task for follow-up based on nextAction
-
-Use the HubSpot entities directly: hubspot/Company, hubspot/Contact, hubspot/Deal, hubspot/Note, hubspot/Task
-Use agenticsdr.core/ThreadState for thread tracking
-
-Execute each action systematically and return a summary.",
-    tools [hubspot/Company, hubspot/Contact, hubspot/Deal, hubspot/Note, hubspot/Task, agenticsdr.core/ThreadState]
+workflow updateThreadState {
+    console.log("🧵 SDR: updateThreadState - threadId: " + updateThreadState.threadId);
+    
+    {ThreadState {threadId? updateThreadState.threadId}} @as existingStates;
+    
+    console.log("🧵 SDR: Thread query returned " + existingStates.length + " results");
+    
+    if (existingStates.length > 0) {
+        existingStates @as [existingState, __];
+        
+        console.log("🧵 SDR: Updating existing thread, current count: " + existingState.emailCount);
+        
+        {ThreadState {
+            threadId? updateThreadState.threadId,
+            contactIds [updateThreadState.contactEmail],
+            companyId updateThreadState.companyId,
+            companyName updateThreadState.companyName,
+            leadStage updateThreadState.leadStage,
+            dealId updateThreadState.dealId,
+            dealStage updateThreadState.dealStage,
+            emailCount existingState.emailCount + 1,
+            lastActivity now(),
+            updatedAt now()
+        }} @as result;
+        
+        console.log("🧵 SDR: Thread updated, new count: " + result.emailCount);
+        result
+    } else {
+        console.log("🧵 SDR: Creating new thread state");
+        
+        {ThreadState {
+            threadId updateThreadState.threadId,
+            contactIds [updateThreadState.contactEmail],
+            companyId updateThreadState.companyId,
+            companyName updateThreadState.companyName,
+            leadStage updateThreadState.leadStage,
+            dealId updateThreadState.dealId,
+            dealStage updateThreadState.dealStage,
+            emailCount 1,
+            lastActivity now()
+        }} @as result;
+        
+        console.log("🧵 SDR: Thread created, ID: " + result.threadId);
+        result
+    }
 }
 
 workflow skipProcessing {
@@ -433,13 +456,135 @@ decision needsSDRProcessing {
     }
 }
 
+record CRMUpdateRequest {
+    shouldCreateCompany Boolean,
+    shouldCreateContact Boolean,
+    shouldCreateDeal Boolean,
+    companyName String,
+    companyDomain String,
+    contactEmail String,
+    contactFirstName String,
+    contactLastName String,
+    leadStage String,
+    leadScore Int,
+    dealStage String,
+    dealName String,
+    reasoning String,
+    nextAction String,
+    ownerId String,
+    existingCompanyId String,
+    existingContactId String
+}
+
+event prepareCRMUpdateRequest {
+    shouldCreateCompany Boolean,
+    shouldCreateContact Boolean,
+    shouldCreateDeal Boolean,
+    companyName String,
+    companyDomain String,
+    contactEmail String,
+    contactFirstName String,
+    contactLastName String,
+    leadStage String,
+    leadScore Int,
+    dealStage String,
+    reasoning String,
+    nextAction String,
+    ownerId String,
+    existingCompanyId String,
+    existingContactId String
+}
+
+workflow prepareCRMUpdateRequest {
+    console.log("📤 SDR: Preparing CRM update request");
+    console.log("The value is: " + prepareCRMUpdateRequest.shouldCreateCompany);
+
+    {CRMUpdateRequest {
+        shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
+        shouldCreateContact prepareCRMUpdateRequest.shouldCreateContact,
+        shouldCreateDeal prepareCRMUpdateRequest.shouldCreateDeal,
+        companyName prepareCRMUpdateRequest.companyName,
+        companyDomain prepareCRMUpdateRequest.companyDomain,
+        contactEmail prepareCRMUpdateRequest.contactEmail,
+        contactFirstName prepareCRMUpdateRequest.contactFirstName,
+        contactLastName prepareCRMUpdateRequest.contactLastName,
+        leadStage prepareCRMUpdateRequest.leadStage,
+        leadScore prepareCRMUpdateRequest.leadScore,
+        dealStage prepareCRMUpdateRequest.dealStage,
+        dealName prepareCRMUpdateRequest.companyName + " - " + prepareCRMUpdateRequest.leadStage,
+        reasoning prepareCRMUpdateRequest.reasoning,
+        nextAction prepareCRMUpdateRequest.nextAction,
+        ownerId prepareCRMUpdateRequest.ownerId,
+        existingCompanyId prepareCRMUpdateRequest.existingCompanyId,
+        existingContactId prepareCRMUpdateRequest.existingContactId
+    }} @as request;
+    
+    console.log("✅ SDR: CRMUpdateRequest record created");
+    console.log("  contactEmail: " + request.contactEmail);
+    console.log("  contactFirstName: " + request.contactFirstName);
+    console.log("  ownerId: " + request.ownerId);
+    console.log("  Flags: Company=" + request.shouldCreateCompany + " Contact=" + request.shouldCreateContact + " Deal=" + request.shouldCreateDeal);
+    console.log("📤 SDR: Passing CRMUpdateRequest to hubspot/updateCRMFromLead");
+    
+    request
+}
+
 flow sdrManager {
-    EmailSDRProcessing --> needsSDRProcessing
+    NeedSDRProcessing --> needsSDRProcessing
     needsSDRProcessing --> "SkipEmail" skipProcessing
     needsSDRProcessing --> "ProcessEmail" ExtractLeadInfo
-    ExtractLeadInfo --> {fetchHubSpotContext {companyDomain ExtractedLeadInfo.company.domain, contactEmail ExtractedLeadInfo.primaryContactEmail, threadId ExtractedLeadInfo.emailThreadId}}
-    fetchHubSpotContext --> LeadAnalysis
-    LeadAnalysis --> UpdateCRM
+    ExtractLeadInfo --> {fetchCombinedContext {
+        companyDomain ExtractedLeadInfo.company.domain,
+        contactEmail ExtractedLeadInfo.primaryContactEmail,
+        threadId ExtractedLeadInfo.emailThreadId
+    }}
+    fetchCombinedContext --> LeadAnalysis
+    LeadAnalysis --> {prepareCRMUpdateRequest {
+        shouldCreateCompany LeadAnalysis.shouldCreateCompany,
+        shouldCreateContact LeadAnalysis.shouldCreateContact,
+        shouldCreateDeal LeadAnalysis.shouldCreateDeal,
+        companyName ExtractedCompany.name,
+        companyDomain ExtractedCompany.domain,
+        contactEmail ExtractedLeadInfo.primaryContactEmail,
+        contactFirstName ExtractedLeadInfo.primaryContactFirstName,
+        contactLastName ExtractedLeadInfo.primaryContactLastName,
+        leadStage LeadAnalysis.leadStage,
+        leadScore LeadAnalysis.leadScore,
+        dealStage LeadAnalysis.dealStage,
+        reasoning LeadAnalysis.reasoning,
+        nextAction LeadAnalysis.nextAction,
+        ownerId EmailData.hubspotOwnerId,
+        existingCompanyId CombinedContext.existingCompanyId,
+        existingContactId CombinedContext.existingContactId
+    }}
+    prepareCRMUpdateRequest --> {hubspot/updateCRMFromLead {
+        shouldCreateCompany CRMUpdateRequest.shouldCreateCompany,
+        shouldCreateContact CRMUpdateRequest.shouldCreateContact,
+        shouldCreateDeal CRMUpdateRequest.shouldCreateDeal,
+        companyName CRMUpdateRequest.companyName,
+        companyDomain CRMUpdateRequest.companyDomain,
+        contactEmail CRMUpdateRequest.contactEmail,
+        contactFirstName CRMUpdateRequest.contactFirstName,
+        contactLastName CRMUpdateRequest.contactLastName,
+        leadStage CRMUpdateRequest.leadStage,
+        leadScore CRMUpdateRequest.leadScore,
+        dealStage CRMUpdateRequest.dealStage,
+        dealName CRMUpdateRequest.dealName,
+        reasoning CRMUpdateRequest.reasoning,
+        nextAction CRMUpdateRequest.nextAction,
+        ownerId CRMUpdateRequest.ownerId,
+        existingCompanyId CRMUpdateRequest.existingCompanyId,
+        existingContactId CRMUpdateRequest.existingContactId
+    }}
+    hubspot/updateCRMFromLead --> {updateThreadState {
+        threadId ExtractedLeadInfo.emailThreadId,
+        contactEmail ExtractedLeadInfo.primaryContactEmail,
+        companyId hubspot/CRMUpdateResult.companyId,
+        companyName hubspot/CRMUpdateResult.companyName,
+        leadStage LeadAnalysis.leadStage,
+        dealId hubspot/CRMUpdateResult.dealId,
+        dealStage LeadAnalysis.dealStage
+    }}
 }
 
 @public agent sdrManager {
@@ -459,6 +604,14 @@ The email data is provided in the message. Execute the flow systematically."
 workflow @after create:gmail/Email {
     {SDRConfig? {}} @as [config];
     
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("🔔 SDR: New email received");
+    console.log("  From: " + gmail/Email.sender);
+    console.log("  To: " + gmail/Email.recipients);
+    console.log("  Subject: " + gmail/Email.subject);
+    console.log("  Thread ID: " + gmail/Email.thread_id);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    
     {EmailData {
         sender gmail/Email.sender,
         recipients gmail/Email.recipients,
@@ -469,9 +622,6 @@ workflow @after create:gmail/Email {
         gmailOwnerEmail config.gmailOwnerEmail,
         hubspotOwnerId config.hubspotOwnerId
     }} @as emailData;
-    
-    console.log("🔔 New email received: " + gmail/Email.subject);
-    console.log("📧 Thread ID: " + gmail/Email.thread_id);
 
     {sdrManager {message emailData}}
 }
