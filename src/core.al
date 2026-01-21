@@ -51,7 +51,7 @@ record SDRProcessingResult {
 }
 
 agent verifySDRProcessing {
-    llm "gpt_llm",
+    llm "sonnet_llm",
     role "You are an intelligent email filter that determines if an email needs sales processing.",
     instruction "Analyze the email using EmailData record to determine if it should be processed by the Sales Development system.
 
@@ -133,7 +133,7 @@ record LeadInfo {
 }
 
 agent ExtractLeadInfo {
-    llm "gpt_llm",
+    llm "sonnet_llm",
     role "You extract comprehensive lead information from emails including contacts, company details, and context.",
     instruction "Extract ALL relevant lead information from the email.
 
@@ -149,16 +149,26 @@ INPUT DATA:
 
 EXTRACTION TASKS:
 
-1. PRIMARY CONTACT - Identify the main external contact:
-   - Parse sender/recipients to find external person (NOT Gmail owner)
-   - Extract: primaryContactEmail, primaryContactFirstName, primaryContactLastName
-   - Determine primaryContactRole: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
-   - Parse from 'Name <email@domain.com>' or 'email@domain.com' format
+1. PRIMARY CONTACT - Identify the main external contact (NOT the Gmail owner):
 
-1b. ALL CONTACTS - If multiple external contacts exist:
-   - allContactEmails: Comma-separated emails (e.g., john[at]acme.com,jane[at]acme.com)
-   - allContactNames: Comma-separated names (e.g., John Doe,Jane Smith)
-   - If only one contact, leave these empty or same as primary
+Read from scratchpad:
+- The Gmail owner email is {{SDRProcessingResult.gmailOwnerEmail}} - this is the USER, NOT the contact
+- The email sender is {{SDRProcessingResult.sender}}
+- The email recipients is {{SDRProcessingResult.recipients}}
+
+LOGIC TO DETERMINE CONTACT:
+- If {{SDRProcessingResult.sender}} equals {{SDRProcessingResult.gmailOwnerEmail}}, then the CONTACT is {{SDRProcessingResult.recipients}}
+- If {{SDRProcessingResult.recipients}} contains {{SDRProcessingResult.gmailOwnerEmail}}, then the CONTACT is {{SDRProcessingResult.sender}}
+- Parse the contact's email from \"Name <email@domain.com>\" format to get plain email address
+- Extract firstName and lastName from the \"Name\" portion (or from email signature if needed)
+- Determine primaryContactRole: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
+
+CRITICAL: The primaryContactEmail must NEVER be {{SDRProcessingResult.gmailOwnerEmail}}. Always use the OTHER party's email.
+
+1b. ALL CONTACTS - If multiple external contacts exist (excluding Gmail owner):
+   - allContactEmails: Comma-separated emails (e.g., email1,email2)
+   - allContactNames: Comma-separated names (e.g., Name1,Name2)
+   - If only one contact, set these to empty string
 
 2. COMPANY - Identify the company:
    
@@ -283,7 +293,7 @@ record LeadAnalysisData {
 }
 
 agent AnalyseLead {
-    llm "gpt_llm",
+    llm "sonnet_llm",
     role "You analyze lead information and existing CRM context to determine lead stage, deal stage, and next actions.",
     instruction "Analyze the lead based on the extracted email information and existing HubSpot context.
 
@@ -495,6 +505,8 @@ workflow prepareCRMUpdateRequest {
     console.log(primaryEmail);
     "contactEmail from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.contactEmail @as conEmail;
     console.log(conEmail);
+    "ownerId from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.ownerId @as ownId;
+    console.log(ownId);
 
     {CRMUpdateRequest {
         shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
