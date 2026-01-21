@@ -36,7 +36,7 @@ record EmailData {
     hubspotOwnerId String
 }
 
-record SDRProcessingCheck {
+record SDRProcessingResult {
     needsProcessing Boolean,
     reason String,
     category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional,
@@ -50,10 +50,10 @@ record SDRProcessingCheck {
     hubspotOwnerId String
 }
 
-agent NeedSDRProcessing {
-    llm "sonnet_llm",
+agent verifySDRProcessing {
+    llm "gpt_llm",
     role "You are an intelligent email filter that determines if an email needs SDR processing.",
-    instruction "Analyze the email to determine if it should be processed by the SDR system.
+    instruction "Analyze the email using EmailData record to determine if it should be processed by the SDR system.
 
 INPUT DATA:
 - Sender: {{EmailData.sender}}
@@ -61,6 +61,9 @@ INPUT DATA:
 - Subject: {{EmailData.subject}}
 - Body: {{EmailData.body}}
 - Date: {{EmailData.date}}
+- ThreadId: {{EmailData.threadId}}
+- Gmail Owner Email: {{EmailData.gmailOwnerEmail}}
+- Hubspot Owner Id: {{EmailData.hubspotOwnerId}}
 
 CLASSIFICATION RULES:
 
@@ -82,28 +85,30 @@ CLASSIFICATION RULES:
 - Spam or suspicious content
 - Out of office replies
 
-RETURN FORMAT (return ALL fields including email data):
+IMPORTANT: You must return in this format with proper data extracted.
 {
-  \"needsProcessing\": true/false,
-  \"reason\": \"Brief explanation (1 sentence)\",
-  \"category\": \"business\" | \"meeting\" | \"sales\" | \"automated\" | \"newsletter\" | \"spam\" | \"unknown\",
-  \"sender\": \"{{EmailData.sender}}\",
-  \"recipients\": \"{{EmailData.recipients}}\",
-  \"subject\": \"{{EmailData.subject}}\",
-  \"body\": \"{{EmailData.body}}\",
-  \"date\": \"{{EmailData.date}}\",
-  \"threadId\": \"{{EmailData.threadId}}\",
-  \"gmailOwnerEmail\": \"{{EmailData.gmailOwnerEmail}}\",
-  \"hubspotOwnerId\": \"{{EmailData.hubspotOwnerId}}\"
+  \"needsProcessing\": true (or false),
+  \"reason\": \"Brief explanation\",
+  \"category\": \"sales\" (or other category),
+  \"sender\": <Sender>,
+  \"recipients\": <Recipients>,
+  \"subject\": <Subject>,
+  \"body\": <Body>,
+  \"date\": <Date>,
+  \"threadId\": <ThreadId>,
+  \"gmailOwnerEmail\": <Gmail Owner Email>,
+  \"hubspotOwnerId\": <Hubspot Owner Id>
 }
 
+Don't generate markdown format, just invoke the agenticsdr.core/SDRProcessingResult and nothing else.
+
 CRITICAL OUTPUT FORMAT RULES:
-- Return ALL fields from SDRProcessingCheck (including email data passthrough)
-- Use actual values from EmailData for the email fields
-- NEVER wrap response in markdown code blocks
-- NEVER use markdown formatting",
+- NEVER wrap response in markdown code blocks or backticks
+- NEVER add JSON formatting with backticks
+- NEVER use markdown formatting in your response
+- DO NOT add any markdown syntax, language identifiers, or code fences",
     retry classifyRetry,
-    responseSchema agenticsdr.core/SDRProcessingCheck
+    responseSchema agenticsdr.core/SDRProcessingResult
 }
 
 record ExtractedLeadInfo {
@@ -127,19 +132,19 @@ record ExtractedLeadInfo {
 }
 
 agent ExtractLeadInfo {
-    llm "sonnet_llm",
+    llm "gpt_llm",
     role "You extract comprehensive lead information from emails including contacts, company details, and context.",
     instruction "Extract ALL relevant lead information from the email.
 
 INPUT DATA:
-- Sender: {{SDRProcessingCheck.sender}}
-- Recipients: {{SDRProcessingCheck.recipients}}
-- Subject: {{SDRProcessingCheck.subject}}
-- Body: {{SDRProcessingCheck.body}}
-- Date: {{SDRProcessingCheck.date}}
-- Thread ID: {{SDRProcessingCheck.threadId}}
-- Gmail Owner: {{SDRProcessingCheck.gmailOwnerEmail}}
-- HubSpot Owner ID: {{SDRProcessingCheck.hubspotOwnerId}}
+- Sender: {{SDRProcessingResult.sender}}
+- Recipients: {{SDRProcessingResult.recipients}}
+- Subject: {{SDRProcessingResult.subject}}
+- Body: {{SDRProcessingResult.body}}
+- Date: {{SDRProcessingResult.date}}
+- Thread ID: {{SDRProcessingResult.threadId}}
+- Gmail Owner: {{SDRProcessingResult.gmailOwnerEmail}}
+- HubSpot Owner ID: {{SDRProcessingResult.hubspotOwnerId}}
 
 EXTRACTION TASKS:
 
@@ -175,35 +180,37 @@ EXTRACTION TASKS:
 
 3. CONTEXT - Preserve email metadata
 
-RETURN FORMAT:
+STEP 3: RETURN ExtractedLeadInfo RECORD
+Return agenticsdr.core/ExtractedLeadInfo with these exact field names and values:
 {
-  \"primaryContactEmail\": \"john@acme.com\",
-  \"primaryContactFirstName\": \"John\",
-  \"primaryContactLastName\": \"Doe\",
-  \"contactRole\": \"buyer\",
-  \"companyName\": \"Acme Corp\",
-  \"companyDomain\": \"acme.com\",
-  \"companyConfidence\": \"high\",
-  \"emailSubject\": \"...\",
-  \"emailBody\": \"...\",
-  \"emailDate\": \"...\",
-  \"emailThreadId\": \"...\",
-  \"emailSender\": \"...\",
-  \"emailRecipients\": \"...\",
-  \"gmailOwnerEmail\": \"...\",
-  \"hubspotOwnerId\": \"...\"
+  \"primaryContactEmail\": \"actual-email-here\",
+  \"primaryContactFirstName\": \"FirstName\",
+  \"primaryContactLastName\": \"LastName\",
+  \"primaryContactRole\": \"buyer\",
+  \"allContactEmails\": \"email1,email2\" (comma-separated if multiple, empty if only one),
+  \"allContactNames\": \"Name1,Name2\" (comma-separated if multiple, empty if only one),
+  \"companyName\": \"Company Name\" (empty string if none),
+  \"companyDomain\": \"domain.com\" (empty string if none),
+  \"companyConfidence\": \"high\" (or \"none\" for personal emails),
+  \"emailSubject\": \"{{SDRProcessingResult.subject}}\",
+  \"emailBody\": \"{{SDRProcessingResult.body}}\",
+  \"emailDate\": \"{{SDRProcessingResult.date}}\",
+  \"emailThreadId\": \"{{SDRProcessingResult.threadId}}\",
+  \"emailSender\": \"{{SDRProcessingResult.sender}}\",
+  \"emailRecipients\": \"{{SDRProcessingResult.recipients}}\",
+  \"gmailOwnerEmail\": \"{{SDRProcessingResult.gmailOwnerEmail}}\",
+  \"hubspotOwnerId\": \"{{SDRProcessingResult.hubspotOwnerId}}\"
 }
 
-RULES:
-- Use ACTUAL data from email
-- Do NOT include Gmail owner in primary contact
-- For personal emails without company, set companyConfidence to \"none\" and companyName/companyDomain to empty string
-- Return ONLY the ExtractedLeadInfo structure with ALL 14 fields
-- NO nested objects or arrays - all fields must be simple strings
+CRITICAL RULES:
+- Access data using scratchpad variables: {{SDRProcessingResult.fieldName}}
+- ALL fields must be plain strings (NO nested objects, NO arrays)
+- For personal emails (gmail, fastmail, outlook), set companyConfidence to \"none\" and companyName/companyDomain to empty string
+- Use actual data from scratchpad - never use placeholder values
 
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap response in markdown code blocks
-- NEVER use markdown formatting",
+OUTPUT FORMAT:
+- NEVER wrap response in markdown code blocks or backticks
+- Do NOT add extra fields beyond the specified",
     retry classifyRetry,
     responseSchema agenticsdr.core/ExtractedLeadInfo
 }
@@ -274,8 +281,8 @@ record LeadAnalysisData {
     confidence String @enum("high", "medium", "low")
 }
 
-agent LeadAnalysis {
-    llm "sonnet_llm",
+agent AnalyseLead {
+    llm "gpt_llm",
     role "You analyze lead information and existing CRM context to determine lead stage, deal stage, and next actions.",
     instruction "Analyze the lead based on the extracted email information and existing HubSpot context.
 
@@ -483,30 +490,29 @@ event prepareCRMUpdateRequest {
 
 workflow prepareCRMUpdateRequest {
     console.log("📤 SDR: Preparing CRM update request");
-    console.log("  contactEmail from ExtractedLeadInfo: " + ExtractedLeadInfo.primaryContactEmail);
-    console.log("  contactFirstName: " + ExtractedLeadInfo.primaryContactFirstName);
-    console.log("  ownerId: " + ExtractedLeadInfo.hubspotOwnerId);
-    console.log("  companyDomain: " + ExtractedLeadInfo.companyDomain);
-    console.log("  companyName: " + ExtractedLeadInfo.companyName);
-    
+    "contactEmail from ExtractedLeadInfo: " + ExtractedLeadInfo.primaryContactEmail @as primaryEmail;
+    console.log(primaryEmail);
+    "contactEmail from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.contactEmail @as conEmail;
+    console.log(conEmail);
+
     {CRMUpdateRequest {
-        shouldCreateCompany LeadAnalysis.shouldCreateCompany,
-        shouldCreateContact LeadAnalysis.shouldCreateContact,
-        shouldCreateDeal LeadAnalysis.shouldCreateDeal,
-        companyName ExtractedLeadInfo.companyName,
-        companyDomain ExtractedLeadInfo.companyDomain,
-        contactEmail ExtractedLeadInfo.primaryContactEmail,
-        contactFirstName ExtractedLeadInfo.primaryContactFirstName,
-        contactLastName ExtractedLeadInfo.primaryContactLastName,
-        leadStage LeadAnalysis.leadStage,
-        leadScore LeadAnalysis.leadScore,
-        dealStage LeadAnalysis.dealStage,
-        dealName ExtractedLeadInfo.companyName + " - " + LeadAnalysis.leadStage,
-        reasoning LeadAnalysis.reasoning,
-        nextAction LeadAnalysis.nextAction,
-        ownerId ExtractedLeadInfo.hubspotOwnerId,
-        existingCompanyId CombinedContext.existingCompanyId,
-        existingContactId CombinedContext.existingContactId
+        shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
+        shouldCreateContact prepareCRMUpdateRequest.shouldCreateContact,
+        shouldCreateDeal prepareCRMUpdateRequest.shouldCreateDeal,
+        companyName prepareCRMUpdateRequest.companyName,
+        companyDomain prepareCRMUpdateRequest.companyDomain,
+        contactEmail prepareCRMUpdateRequest.primaryContactEmail,
+        contactFirstName prepareCRMUpdateRequest.primaryContactFirstName,
+        contactLastName prepareCRMUpdateRequest.primaryContactLastName,
+        leadStage prepareCRMUpdateRequest.leadStage,
+        leadScore prepareCRMUpdateRequest.leadScore,
+        dealStage prepareCRMUpdateRequest.dealStage,
+        dealName prepareCRMUpdateRequest.companyName + " - " + prepareCRMUpdateRequest.leadStage,
+        reasoning prepareCRMUpdateRequest.reasoning,
+        nextAction prepareCRMUpdateRequest.nextAction,
+        ownerId prepareCRMUpdateRequest.hubspotOwnerId,
+        existingCompanyId prepareCRMUpdateRequest.existingCompanyId,
+        existingContactId prepareCRMUpdateRequest.existingContactId
     }} @as request;
     
     console.log("✅ SDR: CRMUpdateRequest record created");
@@ -520,32 +526,32 @@ workflow prepareCRMUpdateRequest {
 }
 
 flow sdrManager {
-    NeedSDRProcessing --> needsSDRProcessing
+    verifySDRProcessing --> needsSDRProcessing
     needsSDRProcessing --> "SkipEmail" skipProcessing
     needsSDRProcessing --> "ProcessEmail" ExtractLeadInfo
     ExtractLeadInfo --> {fetchCombinedContext {
-        companyDomain ExtractedLeadInfo.companyDomain,
-        contactEmail ExtractedLeadInfo.primaryContactEmail,
-        threadId ExtractedLeadInfo.emailThreadId
+        companyDomain ExtractLeadInfo.companyDomain,
+        contactEmail ExtractLeadInfo.primaryContactEmail,
+        threadId ExtractLeadInfo.emailThreadId
     }}
-    fetchCombinedContext --> LeadAnalysis
-    LeadAnalysis --> {prepareCRMUpdateRequest {
-        shouldCreateCompany LeadAnalysis.shouldCreateCompany,
-        shouldCreateContact LeadAnalysis.shouldCreateContact,
-        shouldCreateDeal LeadAnalysis.shouldCreateDeal,
-        companyName ExtractedCompany.name,
-        companyDomain ExtractedCompany.domain,
-        contactEmail ExtractedLeadInfo.primaryContactEmail,
-        contactFirstName ExtractedLeadInfo.primaryContactFirstName,
-        contactLastName ExtractedLeadInfo.primaryContactLastName,
-        leadStage LeadAnalysis.leadStage,
-        leadScore LeadAnalysis.leadScore,
-        dealStage LeadAnalysis.dealStage,
-        reasoning LeadAnalysis.reasoning,
-        nextAction LeadAnalysis.nextAction,
-        ownerId EmailData.hubspotOwnerId,
-        existingCompanyId CombinedContext.existingCompanyId,
-        existingContactId CombinedContext.existingContactId
+    fetchCombinedContext --> AnalyseLead
+    AnalyseLead --> {prepareCRMUpdateRequest {
+        shouldCreateCompany AnalyseLead.shouldCreateCompany,
+        shouldCreateContact AnalyseLead.shouldCreateContact,
+        shouldCreateDeal AnalyseLead.shouldCreateDeal,
+        companyName AnalyseLead.name,
+        companyDomain AnalyseLead.domain,
+        contactEmail AnalyseLead.primaryContactEmail,
+        contactFirstName AnalyseLead.primaryContactFirstName,
+        contactLastName AnalyseLead.primaryContactLastName,
+        leadStage AnalyseLead.leadStage,
+        leadScore AnalyseLead.leadScore,
+        dealStage AnalyseLead.dealStage,
+        reasoning AnalyseLead.reasoning,
+        nextAction AnalyseLead.nextAction,
+        ownerId AnalyseLead.hubspotOwnerId,
+        existingCompanyId AnalyseLead.existingCompanyId,
+        existingContactId AnalyseLead.existingContactId
     }}
     prepareCRMUpdateRequest --> {hubspot/updateCRMFromLead {
         shouldCreateCompany CRMUpdateRequest.shouldCreateCompany,
@@ -571,9 +577,9 @@ flow sdrManager {
         contactEmail ExtractedLeadInfo.primaryContactEmail,
         companyId hubspot/CRMUpdateResult.companyId,
         companyName hubspot/CRMUpdateResult.companyName,
-        leadStage LeadAnalysis.leadStage,
+        leadStage AnalyseLead.leadStage,
         dealId hubspot/CRMUpdateResult.dealId,
-        dealStage LeadAnalysis.dealStage
+        dealStage AnalyseLead.dealStage
     }}
 }
 
