@@ -106,27 +106,16 @@ CRITICAL OUTPUT FORMAT RULES:
     responseSchema agenticsdr.core/SDRProcessingCheck
 }
 
-record ExtractedContact {
-    email String,
-    name String @optional,
-    firstName String @optional,
-    lastName String @optional,
-    role String @enum("buyer", "user", "influencer", "champion", "unknown") @default("unknown")
-}
-
-record ExtractedCompany {
-    name String @optional,
-    domain String @optional,
-    confidence String @enum("high", "medium", "low", "none") @default("none"),
-    source String @enum("domain", "signature", "body", "unknown") @optional
-}
-
 record ExtractedLeadInfo {
-    contacts ExtractedContact[],
-    primaryContactEmail String @optional,
-    primaryContactFirstName String @optional,
-    primaryContactLastName String @optional,
-    company ExtractedCompany,
+    primaryContactEmail String,
+    primaryContactFirstName String,
+    primaryContactLastName String,
+    primaryContactRole String @enum("buyer", "user", "influencer", "champion", "unknown") @default("unknown"),
+    allContactEmails String @optional,
+    allContactNames String @optional,
+    companyName String,
+    companyDomain String,
+    companyConfidence String @enum("high", "medium", "low", "none") @default("none"),
     emailSubject String,
     emailBody String,
     emailDate String,
@@ -154,12 +143,16 @@ INPUT DATA:
 
 EXTRACTION TASKS:
 
-1. CONTACTS - Extract all external participants:
-   - Parse: 'Name <email@domain.com>' or 'email@domain.com'
-   - Extract: email, name, firstName, lastName
-   - Determine role: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
-   - EXCLUDE the Gmail owner email
-   - Identify primaryContactEmail (main external stakeholder)
+1. PRIMARY CONTACT - Identify the main external contact:
+   - Parse sender/recipients to find external person (NOT Gmail owner)
+   - Extract: primaryContactEmail, primaryContactFirstName, primaryContactLastName
+   - Determine primaryContactRole: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
+   - Parse from 'Name <email@domain.com>' or 'email@domain.com' format
+
+1b. ALL CONTACTS - If multiple external contacts exist:
+   - allContactEmails: Comma-separated emails (e.g., john[at]acme.com,jane[at]acme.com)
+   - allContactNames: Comma-separated names (e.g., John Doe,Jane Smith)
+   - If only one contact, leave these empty or same as primary
 
 2. COMPANY - Identify the company:
    
@@ -170,35 +163,27 @@ EXTRACTION TASKS:
    - aol.com, mail.com, email.com
    
    STRATEGY (in order):
-   a) Check email signature for company name (high confidence, source: signature)
-   b) Look for explicit company mentions in body (medium confidence, source: body)
-   c) Extract from business email domain (high confidence, source: domain)
+   a) Check email signature for company name (high confidence)
+   b) Look for explicit company mentions in body (medium confidence)
+   c) Extract from business email domain (high confidence)
       - SKIP if domain is in personal email list
       - Example: alice@acme.com → domain: acme.com, name: Acme
    
    If NO company found:
-   - Set confidence: \"none\"
-   - Set name and domain to empty string
+   - Set companyConfidence: \"none\"
+   - Set companyName and companyDomain to empty string
 
-3. CONTEXT - Preserve email metadata:
-   - emailSubject, emailBody, emailDate, emailThreadId
-   - emailSender, emailRecipients
-   - gmailOwnerEmail, hubspotOwnerId
+3. CONTEXT - Preserve email metadata
 
 RETURN FORMAT:
 {
-  \"contacts\": [
-    {\"email\": \"john@acme.com\", \"name\": \"John Doe\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"role\": \"buyer\"}
-  ],
   \"primaryContactEmail\": \"john@acme.com\",
   \"primaryContactFirstName\": \"John\",
   \"primaryContactLastName\": \"Doe\",
-  \"company\": {
-    \"name\": \"Acme Corp\",
-    \"domain\": \"acme.com\",
-    \"confidence\": \"high\",
-    \"source\": \"domain\"
-  },
+  \"contactRole\": \"buyer\",
+  \"companyName\": \"Acme Corp\",
+  \"companyDomain\": \"acme.com\",
+  \"companyConfidence\": \"high\",
   \"emailSubject\": \"...\",
   \"emailBody\": \"...\",
   \"emailDate\": \"...\",
@@ -211,9 +196,10 @@ RETURN FORMAT:
 
 RULES:
 - Use ACTUAL data from email
-- Do NOT include Gmail owner in contacts
-- For personal emails without company, set company.confidence to \"none\"
-- Return ONLY the ExtractedLeadInfo structure
+- Do NOT include Gmail owner in primary contact
+- For personal emails without company, set companyConfidence to \"none\" and companyName/companyDomain to empty string
+- Return ONLY the ExtractedLeadInfo structure with ALL 14 fields
+- NO nested objects or arrays - all fields must be simple strings
 
 CRITICAL OUTPUT FORMAT RULES:
 - NEVER wrap response in markdown code blocks
@@ -497,32 +483,36 @@ event prepareCRMUpdateRequest {
 
 workflow prepareCRMUpdateRequest {
     console.log("📤 SDR: Preparing CRM update request");
-    console.log("The value is: " + prepareCRMUpdateRequest.shouldCreateCompany);
-
+    console.log("  contactEmail from ExtractedLeadInfo: " + ExtractedLeadInfo.primaryContactEmail);
+    console.log("  contactFirstName: " + ExtractedLeadInfo.primaryContactFirstName);
+    console.log("  ownerId: " + ExtractedLeadInfo.hubspotOwnerId);
+    console.log("  companyDomain: " + ExtractedLeadInfo.companyDomain);
+    console.log("  companyName: " + ExtractedLeadInfo.companyName);
+    
     {CRMUpdateRequest {
-        shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
-        shouldCreateContact prepareCRMUpdateRequest.shouldCreateContact,
-        shouldCreateDeal prepareCRMUpdateRequest.shouldCreateDeal,
-        companyName prepareCRMUpdateRequest.companyName,
-        companyDomain prepareCRMUpdateRequest.companyDomain,
-        contactEmail prepareCRMUpdateRequest.contactEmail,
-        contactFirstName prepareCRMUpdateRequest.contactFirstName,
-        contactLastName prepareCRMUpdateRequest.contactLastName,
-        leadStage prepareCRMUpdateRequest.leadStage,
-        leadScore prepareCRMUpdateRequest.leadScore,
-        dealStage prepareCRMUpdateRequest.dealStage,
-        dealName prepareCRMUpdateRequest.companyName + " - " + prepareCRMUpdateRequest.leadStage,
-        reasoning prepareCRMUpdateRequest.reasoning,
-        nextAction prepareCRMUpdateRequest.nextAction,
-        ownerId prepareCRMUpdateRequest.ownerId,
-        existingCompanyId prepareCRMUpdateRequest.existingCompanyId,
-        existingContactId prepareCRMUpdateRequest.existingContactId
+        shouldCreateCompany LeadAnalysis.shouldCreateCompany,
+        shouldCreateContact LeadAnalysis.shouldCreateContact,
+        shouldCreateDeal LeadAnalysis.shouldCreateDeal,
+        companyName ExtractedLeadInfo.companyName,
+        companyDomain ExtractedLeadInfo.companyDomain,
+        contactEmail ExtractedLeadInfo.primaryContactEmail,
+        contactFirstName ExtractedLeadInfo.primaryContactFirstName,
+        contactLastName ExtractedLeadInfo.primaryContactLastName,
+        leadStage LeadAnalysis.leadStage,
+        leadScore LeadAnalysis.leadScore,
+        dealStage LeadAnalysis.dealStage,
+        dealName ExtractedLeadInfo.companyName + " - " + LeadAnalysis.leadStage,
+        reasoning LeadAnalysis.reasoning,
+        nextAction LeadAnalysis.nextAction,
+        ownerId ExtractedLeadInfo.hubspotOwnerId,
+        existingCompanyId CombinedContext.existingCompanyId,
+        existingContactId CombinedContext.existingContactId
     }} @as request;
     
     console.log("✅ SDR: CRMUpdateRequest record created");
-    console.log("  contactEmail: " + request.contactEmail);
-    console.log("  contactFirstName: " + request.contactFirstName);
-    console.log("  ownerId: " + request.ownerId);
+    console.log("  contactEmail in record: " + request.contactEmail);
+    console.log("  contactFirstName in record: " + request.contactFirstName);
+    console.log("  ownerId in record: " + request.ownerId);
     console.log("  Flags: Company=" + request.shouldCreateCompany + " Contact=" + request.shouldCreateContact + " Deal=" + request.shouldCreateDeal);
     console.log("📤 SDR: Passing CRMUpdateRequest to hubspot/updateCRMFromLead");
     
@@ -534,7 +524,7 @@ flow sdrManager {
     needsSDRProcessing --> "SkipEmail" skipProcessing
     needsSDRProcessing --> "ProcessEmail" ExtractLeadInfo
     ExtractLeadInfo --> {fetchCombinedContext {
-        companyDomain ExtractedLeadInfo.company.domain,
+        companyDomain ExtractedLeadInfo.companyDomain,
         contactEmail ExtractedLeadInfo.primaryContactEmail,
         threadId ExtractedLeadInfo.emailThreadId
     }}
