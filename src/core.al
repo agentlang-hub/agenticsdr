@@ -420,16 +420,13 @@ event updateThreadState {
 }
 
 workflow updateThreadState {
-    console.log("🧵 SDR: updateThreadState - threadId: " + updateThreadState.threadId);
     
     {ThreadState {threadId? updateThreadState.threadId}} @as existingStates;
     
-    console.log("🧵 SDR: Thread query returned " + existingStates.length + " results");
     
     if (existingStates.length > 0) {
         existingStates @as [existingState];
         
-        console.log("🧵 SDR: Updating existing thread, current count: " + existingState.emailCount);
         
         {ThreadState {
             threadId? updateThreadState.threadId,
@@ -447,10 +444,8 @@ workflow updateThreadState {
             updatedAt now()
         }} @as result;
         
-        console.log("🧵 SDR: Thread updated, new count: " + result.emailCount);
         result
     } else {
-        console.log("🧵 SDR: Creating new thread state");
         
         {ThreadState {
             threadId updateThreadState.threadId,
@@ -467,7 +462,6 @@ workflow updateThreadState {
             lastActivity now()
         }} @as result;
         
-        console.log("🧵 SDR: Thread created, ID: " + result.threadId);
         result
     }
 }
@@ -528,13 +522,9 @@ event prepareCRMUpdateRequest {
 }
 
 workflow prepareCRMUpdateRequest {
-    console.log("📤 SDR: Preparing CRM update request");
     "contactEmail from LeadInfo: " + LeadInfo.primaryContactEmail @as primaryEmail;
-    console.log(primaryEmail);
     "contactEmail from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.contactEmail @as conEmail;
-    console.log(conEmail);
     "ownerId from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.ownerId @as ownId;
-    console.log(ownId);
 
     {CRMUpdateRequest {
         shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
@@ -556,12 +546,6 @@ workflow prepareCRMUpdateRequest {
         existingContactId prepareCRMUpdateRequest.existingContactId
     }} @as request;
     
-    console.log("✅ SDR: CRMUpdateRequest record created");
-    console.log("  contactEmail in record: " + request.contactEmail);
-    console.log("  contactFirstName in record: " + request.contactFirstName);
-    console.log("  ownerId in record: " + request.ownerId);
-    console.log("  Flags: Company=" + request.shouldCreateCompany + " Contact=" + request.shouldCreateContact + " Deal=" + request.shouldCreateDeal);
-    console.log("📤 SDR: Passing CRMUpdateRequest to hubspot/updateCRMFromLead");
     
     request
 }
@@ -644,13 +628,6 @@ The email data is provided in the message. Execute the flow systematically."
 workflow @after create:gmail/Email {
     {SDRConfig? {}} @as [config];
     
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("🔔 SDR: New email received");
-    console.log("  From: " + gmail/Email.sender);
-    console.log("  To: " + gmail/Email.recipients);
-    console.log("  Subject: " + gmail/Email.subject);
-    console.log("  Thread ID: " + gmail/Email.thread_id);
-    console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     {EmailData {
         sender gmail/Email.sender,
