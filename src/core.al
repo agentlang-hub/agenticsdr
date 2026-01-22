@@ -520,7 +520,7 @@ workflow prepareCRMUpdateRequest {
         leadStage prepareCRMUpdateRequest.leadStage,
         leadScore prepareCRMUpdateRequest.leadScore,
         dealStage prepareCRMUpdateRequest.dealStage,
-        dealName prepareCRMUpdateRequest.companyName + " - " + prepareCRMUpdateRequest.leadStage,
+        dealName prepareCRMUpdateRequest.leadStage + " - " + prepareCRMUpdateRequest.dealStage,
         reasoning prepareCRMUpdateRequest.reasoning,
         nextAction prepareCRMUpdateRequest.nextAction,
         ownerId prepareCRMUpdateRequest.ownerId,
@@ -552,8 +552,8 @@ flow sdrManager {
         shouldCreateCompany AnalyseLead.shouldCreateCompany,
         shouldCreateContact AnalyseLead.shouldCreateContact,
         shouldCreateDeal AnalyseLead.shouldCreateDeal,
-        companyName ExtractLeadInfo.name,
-        companyDomain ExtractLeadInfo.domain,
+        companyName ExtractLeadInfo.companyName,
+        companyDomain ExtractLeadInfo.companyDomain,
         contactEmail ExtractLeadInfo.primaryContactEmail,
         contactFirstName ExtractLeadInfo.primaryContactFirstName,
         contactLastName ExtractLeadInfo.primaryContactLastName,
@@ -562,9 +562,9 @@ flow sdrManager {
         dealStage AnalyseLead.dealStage,
         reasoning AnalyseLead.reasoning,
         nextAction AnalyseLead.nextAction,
-        ownerId ExtractLeadInfo.hubspotOwnerId,
-        existingCompanyId ExtractLeadInfo.existingCompanyId,
-        existingContactId ExtractLeadInfo.existingContactId
+        ownerId verifySDRProcessing.hubspotOwnerId,
+        existingCompanyId fetchCombinedContext.existingCompanyId,
+        existingContactId fetchCombinedContext.existingContactId
     }}
     prepareCRMUpdateRequest --> {hubspot/updateCRMFromLead {
         shouldCreateCompany CRMUpdateRequest.shouldCreateCompany,
