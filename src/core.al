@@ -244,40 +244,38 @@ event fetchCombinedContext {
 }
 
 workflow fetchCombinedContext {
-    console.log("🔍 SDR: fetchCombinedContext - companyDomain: " + fetchCombinedContext.companyDomain + ", contactEmail: " + fetchCombinedContext.contactEmail + ", threadId: " + fetchCombinedContext.threadId);
-    
     {hubspot/fetchCRMContext {
         companyDomain fetchCombinedContext.companyDomain,
         contactEmail fetchCombinedContext.contactEmail
     }} @as crmContext;
-    
-    console.log("🔍 SDR: CRM Context - hasCompany: " + crmContext.hasCompany + ", hasContact: " + crmContext.hasContact);
-    console.log("🔍 SDR: Existing IDs - Company: " + crmContext.existingCompanyId + ", Contact: " + crmContext.existingContactId);
-    
-    "NEW" @as threadStateLeadStage;
-    0 @as threadStateEmailCount;
-    
+
     {ThreadState {threadId? fetchCombinedContext.threadId}} @as threadStates;
-    
-    console.log("🔍 SDR: Thread query returned " + threadStates.length + " results");
-    
+
     if (threadStates.length > 0) {
-        threadStates @as [ts, __];
-        ts.leadStage @as threadStateLeadStage;
-        ts.emailCount @as threadStateEmailCount;
-        console.log("🔍 SDR: Existing thread - Stage: " + threadStateLeadStage + ", Count: " + threadStateEmailCount)
-    };
-    
-    {CombinedContext {
-        existingCompanyId crmContext.existingCompanyId,
-        existingCompanyName crmContext.existingCompanyName,
-        existingContactId crmContext.existingContactId,
-        hasCompany crmContext.hasCompany,
-        hasContact crmContext.hasContact,
-        threadStateExists threadStates.length > 0,
-        threadStateLeadStage threadStateLeadStage,
-        threadStateEmailCount threadStateEmailCount
-    }}
+        threadStates @as [ts];
+
+        {CombinedContext {
+            existingCompanyId crmContext.existingCompanyId,
+            existingCompanyName crmContext.existingCompanyName,
+            existingContactId crmContext.existingContactId,
+            hasCompany crmContext.hasCompany,
+            hasContact crmContext.hasContact,
+            threadStateExists threadStates.length > 0,
+            threadStateLeadStage ts.leadStage,
+            threadStateEmailCount ts.emailCount
+        }}
+    } else {
+        {CombinedContext {
+            existingCompanyId crmContext.existingCompanyId,
+            existingCompanyName crmContext.existingCompanyName,
+            existingContactId crmContext.existingContactId,
+            hasCompany crmContext.hasCompany,
+            hasContact crmContext.hasContact,
+            threadStateExists threadStates.length > 0,
+            threadStateLeadStage "NEW",
+            threadStateEmailCount 0
+        }}
+    }
 }
 
 record LeadAnalysisData {
@@ -405,7 +403,7 @@ workflow updateThreadState {
     console.log("🧵 SDR: Thread query returned " + existingStates.length + " results");
     
     if (existingStates.length > 0) {
-        existingStates @as [existingState, __];
+        existingStates @as [existingState];
         
         console.log("🧵 SDR: Updating existing thread, current count: " + existingState.emailCount);
         
@@ -563,8 +561,8 @@ flow sdrManager {
         reasoning AnalyseLead.reasoning,
         nextAction AnalyseLead.nextAction,
         ownerId verifySDRProcessing.hubspotOwnerId,
-        existingCompanyId fetchCombinedContext.existingCompanyId,
-        existingContactId fetchCombinedContext.existingContactId
+        existingCompanyId CombinedContext.existingCompanyId,
+        existingContactId CombinedContext.existingContactId
     }}
     prepareCRMUpdateRequest --> {hubspot/updateCRMFromLead {
         shouldCreateCompany CRMUpdateRequest.shouldCreateCompany,
