@@ -166,7 +166,12 @@ LOGIC TO DETERMINE CONTACT:
 - Extract firstName and lastName from the \"Name\" portion (or from email signature if needed)
 - Determine primaryContactRole: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
 
-CRITICAL: The primaryContactEmail must NEVER be {{SDRProcessingResult.gmailOwnerEmail}}. Always use the OTHER party's email.
+CRITICAL RULES:
+1. The primaryContactEmail must NEVER be {{SDRProcessingResult.gmailOwnerEmail}}. Always use the OTHER party's email.
+2. NEVER change gmailOwnerEmail - it must ALWAYS be: {{SDRProcessingResult.gmailOwnerEmail}}
+3. NEVER change hubspotOwnerId - it must ALWAYS be: {{SDRProcessingResult.hubspotOwnerId}}
+4. If sender is {{SDRProcessingResult.gmailOwnerEmail}}, then primaryContactEmail MUST be from recipients
+5. If recipients contains {{SDRProcessingResult.gmailOwnerEmail}}, then primaryContactEmail MUST be from sender
 
 1b. ALL CONTACTS - If multiple external contacts exist (excluding Gmail owner):
    - allContactEmails: Comma-separated emails (e.g., email1,email2)
@@ -192,17 +197,30 @@ CRITICAL: The primaryContactEmail must NEVER be {{SDRProcessingResult.gmailOwner
    - Set companyConfidence: \"none\"
    - Set companyName and companyDomain to empty string
 
-3. CONTEXT - Preserve email metadata
+3. CONTEXT - Preserve email metadata EXACTLY as provided
 
 STEP 3: RETURN LeadInfo
-Return agenticsdr.core/LeadInfo with these exact field names and values:
+Return agenticsdr.core/LeadInfo with these exact field names and values.
+
+CRITICAL - DO NOT MODIFY THESE FIELDS:
+- emailSubject: MUST be exactly {{SDRProcessingResult.subject}}
+- emailBody: MUST be exactly {{SDRProcessingResult.body}}
+- emailDate: MUST be exactly {{SDRProcessingResult.date}}
+- emailThreadId: MUST be exactly {{SDRProcessingResult.threadId}}
+- emailSender: MUST be exactly {{SDRProcessingResult.sender}}
+- emailRecipients: MUST be exactly {{SDRProcessingResult.recipients}}
+- gmailOwnerEmail: MUST be exactly {{SDRProcessingResult.gmailOwnerEmail}}
+- hubspotOwnerId: MUST be exactly {{SDRProcessingResult.hubspotOwnerId}}
+
+DO NOT make up values. DO NOT change values. COPY EXACTLY.
+
 {
   \"primaryContactEmail\": \"actual-email-here\",
   \"primaryContactFirstName\": \"FirstName\",
   \"primaryContactLastName\": \"LastName\",
   \"primaryContactRole\": \"buyer\",
-  \"allContactEmails\": \"email1,email2\" (comma-separated if multiple, empty if only one),
-  \"allContactNames\": \"Name1,Name2\" (comma-separated if multiple, empty if only one),
+  \"allContactEmails\": \"email1,email2\" (comma-separated if multiple, empty string if only one),
+  \"allContactNames\": \"Name1,Name2\" (comma-separated if multiple, empty string if only one),
   \"companyName\": \"Company Name\" (empty string if none),
   \"companyDomain\": \"domain.com\" (empty string if none),
   \"companyConfidence\": \"high\" (or \"none\" for personal emails),
@@ -494,19 +512,19 @@ event prepareCRMUpdateRequest {
     shouldCreateCompany Boolean,
     shouldCreateContact Boolean,
     shouldCreateDeal Boolean,
-    companyName String,
-    companyDomain String,
-    contactEmail String,
-    contactFirstName String,
-    contactLastName String,
+    companyName String @optional,
+    companyDomain String @optional,
+    contactEmail String @optional,
+    contactFirstName String @optional,
+    contactLastName String @optional,
     leadStage String,
     leadScore Int,
     dealStage String,
     reasoning String,
     nextAction String,
     ownerId String,
-    existingCompanyId String,
-    existingContactId String
+    existingCompanyId String @optional,
+    existingContactId String @optional
 }
 
 workflow prepareCRMUpdateRequest {
@@ -596,8 +614,8 @@ flow sdrManager {
         existingContactId CRMUpdateRequest.existingContactId
     }}
     hubspot/updateCRMFromLead --> {updateThreadState {
-        threadId LeadInfo.emailThreadId,
-        contactEmail LeadInfo.primaryContactEmail,
+        threadId ExtractLeadInfo.emailThreadId,
+        contactEmail ExtractLeadInfo.primaryContactEmail,
         companyId hubspot/CRMUpdateResult.companyId,
         companyName hubspot/CRMUpdateResult.companyName,
         leadStage AnalyseLead.leadStage,
