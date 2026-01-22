@@ -14,6 +14,9 @@ entity ThreadState {
     leadStage String @enum("NEW", "ENGAGED", "QUALIFIED", "DISQUALIFIED") @default("NEW"),
     dealId String @optional,
     dealStage String @enum("DISCOVERY", "MEETING", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST") @optional,
+    latestNoteId String @optional,
+    latestTaskId String @optional,
+    latestMeetingId String @optional,
     lastActivity DateTime @default(now()),
     emailCount Int @default(1),
     createdAt DateTime @default(now()),
@@ -392,7 +395,10 @@ event updateThreadState {
     companyName String @optional,
     leadStage String,
     dealId String @optional,
-    dealStage String @optional
+    dealStage String @optional,
+    noteId String @optional,
+    taskId String @optional,
+    meetingId String @optional
 }
 
 workflow updateThreadState {
@@ -415,6 +421,9 @@ workflow updateThreadState {
             leadStage updateThreadState.leadStage,
             dealId updateThreadState.dealId,
             dealStage updateThreadState.dealStage,
+            latestNoteId updateThreadState.noteId,
+            latestTaskId updateThreadState.taskId,
+            latestMeetingId updateThreadState.meetingId,
             emailCount existingState.emailCount + 1,
             lastActivity now(),
             updatedAt now()
@@ -433,6 +442,9 @@ workflow updateThreadState {
             leadStage updateThreadState.leadStage,
             dealId updateThreadState.dealId,
             dealStage updateThreadState.dealStage,
+            latestNoteId updateThreadState.noteId,
+            latestTaskId updateThreadState.taskId,
+            latestMeetingId updateThreadState.meetingId,
             emailCount 1,
             lastActivity now()
         }} @as result;
@@ -590,7 +602,10 @@ flow sdrManager {
         companyName hubspot/CRMUpdateResult.companyName,
         leadStage AnalyseLead.leadStage,
         dealId hubspot/CRMUpdateResult.dealId,
-        dealStage AnalyseLead.dealStage
+        dealStage AnalyseLead.dealStage,
+        noteId hubspot/CRMUpdateResult.noteId,
+        taskId hubspot/CRMUpdateResult.taskId,
+        meetingId hubspot/CRMUpdateResult.meetingId
     }}
 }
 
