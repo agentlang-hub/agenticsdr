@@ -189,6 +189,8 @@ If YES all internal:
 
 NOTE: If email is internal but discusses a customer or prospect (forwarded external email or internal sales discussion) still consider processing it.
 
+IMPORTANT: If the sender matches {{InboundEmailPayload.gmailOwnerEmail}} but recipients include external domains, this is an OUTBOUND follow-up to a prospect and SHOULD be processed for tracking and CRM sync purposes. DO NOT skip these emails.
+
 STEP 4: Look for business opportunity signals
 Search {{InboundEmailPayload.subject}} and {{InboundEmailPayload.body}} for these keywords:
   - Sales keywords: pricing, quote, proposal, purchase, buy, contract, cost, budget
@@ -201,7 +203,15 @@ If ANY keywords found:
   - SET reason = Brief description of what signal was found
   - Go to SECTION 4 to construct output
 
-STEP 5: Default decision when uncertain
+STEP 5: Check if this is an outbound follow-up email
+If the sender matches {{InboundEmailPayload.gmailOwnerEmail}} AND recipients include external domains:
+  - This is an outbound follow-up email to prospects/customers
+  - SET needsProcessing = true
+  - SET category = business
+  - SET reason = Outbound follow-up email to external contact requiring tracking
+  - Go to SECTION 4 to construct output
+
+STEP 6: Default decision when uncertain
 If the email involves an external party not internal and has some business context:
   - SET needsProcessing = true because better to process than miss an opportunity
   - SET category = unknown
@@ -269,11 +279,11 @@ EXAMPLE OUTPUT 2 - Automated email to skip:
   date: 2026-01-23T09:15:00Z,
   threadId: thread_xyz789,
   gmailOwnerEmail: dev@mycompany.com,
-  hubspotOwnerId: 12345
+   hubspotOwnerId: 12345
 }
 
 ================================================================================
-SECTION 5: VALIDATION CHECKLIST
+SECTION 6: VALIDATION CHECKLIST
 ================================================================================
 
 Before returning your output, verify ALL of these:
@@ -481,7 +491,7 @@ SECTION 4: OUTPUT CONSTRUCTION
 
 You MUST return agenticsdr.core/LeadIntelligence with ALL fields.
 
-CRITICAL: These fields must be copied EXACTLY from input - DO NOT modify:
+CRITICAL: These fields must be copied EXACTLY from input - DO NOT modify, truncate, or leave empty:
 - emailSubject from {{EmailQualificationResult.subject}}
 - emailBody from {{EmailQualificationResult.body}}
 - emailDate from {{EmailQualificationResult.date}}
@@ -489,7 +499,7 @@ CRITICAL: These fields must be copied EXACTLY from input - DO NOT modify:
 - emailSender from {{EmailQualificationResult.sender}}
 - emailRecipients from {{EmailQualificationResult.recipients}}
 - gmailOwnerEmail from {{EmailQualificationResult.gmailOwnerEmail}}
-- hubspotOwnerId from {{EmailQualificationResult.hubspotOwnerId}}
+- hubspotOwnerId from {{EmailQualificationResult.hubspotOwnerId}} ← CRITICAL: This is the HubSpot owner ID (like \"85257652\"). You MUST copy this EXACTLY as provided. NEVER leave this empty or use empty string.
 
 OUTPUT STRUCTURE:
 
@@ -550,7 +560,7 @@ Before returning, verify ALL of these:
 8. companyConfidence is one of: high, medium, low, none
 9. All email* fields copied EXACTLY from input (not modified, not truncated)
 10. gmailOwnerEmail copied EXACTLY from input
-11. hubspotOwnerId copied EXACTLY from input
+11. hubspotOwnerId copied EXACTLY from input - THIS IS CRITICAL! Verify the value matches the input exactly (e.g., \"85257652\"). NEVER use empty string \"\"
 12. No markdown formatting, no backticks, no code blocks
 13. Clean JSON only
 
@@ -563,9 +573,10 @@ CRITICAL RULES
 3. NEVER wrap response in markdown code blocks or backticks
 4. NEVER modify or truncate the email metadata fields
 5. ALWAYS copy emailSubject, emailBody, emailDate, emailThreadId, emailSender, emailRecipients, gmailOwnerEmail, hubspotOwnerId EXACTLY
-6. If contact uses personal email (gmail, outlook, etc.) AND no company found: companyConfidence = none and companyName empty and companyDomain empty
-7. ALWAYS return clean JSON matching LeadIntelligence schema
-8. NEVER add commentary outside the JSON structure",
+6. CRITICAL: hubspotOwnerId MUST be copied exactly from input. If input has \"85257652\", output must have \"85257652\". NEVER output empty string \"\" for hubspotOwnerId
+7. If contact uses personal email (gmail, outlook, etc.) AND no company found: companyConfidence = none and companyName empty and companyDomain empty
+8. ALWAYS return clean JSON matching LeadIntelligence schema
+9. NEVER add commentary outside the JSON structure",
     retry classifyRetry,
     responseSchema agenticsdr.core/LeadIntelligence
 }
@@ -920,7 +931,7 @@ flow LeadPipelineOrchestrator {
         threadId LeadIntelligenceExtractor.emailThreadId
     }}
     enrichLeadContext --> LeadStageClassifier
-    LeadStageClassifier --> {hubspot/LeadSyncTriggered {
+    LeadStageClassifier --> {hubspot/syncLeadToCRM {
         shouldCreateCompany LeadStageClassifier.shouldCreateCompany,
         shouldCreateContact LeadStageClassifier.shouldCreateContact,
         shouldCreateDeal LeadStageClassifier.shouldCreateDeal,
