@@ -599,7 +599,7 @@ event enrichLeadContext {
 }
 
 workflow enrichLeadContext {
-    {hubspot/CRMDataRequested {
+    {hubspot/retrieveCRMData {
         companyDomain enrichLeadContext.companyDomain,
         contactEmail enrichLeadContext.contactEmail
     }} @as crmContext;
