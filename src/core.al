@@ -581,7 +581,7 @@ record EnrichedLeadContext {
     threadStateEmailCount Int @default(0)
 }
 
-event LeadContextRequested {
+event enrichLeadContext {
     companyDomain String @optional,
     contactEmail String @optional,
     threadId String
@@ -589,11 +589,11 @@ event LeadContextRequested {
 
 workflow enrichLeadContext {
     {hubspot/CRMDataRequested {
-        companyDomain LeadContextRequested.companyDomain,
-        contactEmail LeadContextRequested.contactEmail
+        companyDomain enrichLeadContext.companyDomain,
+        contactEmail enrichLeadContext.contactEmail
     }} @as crmContext;
 
-    {ConversationThread {threadId? LeadContextRequested.threadId}} @as threadStates;
+    {ConversationThread {threadId? enrichLeadContext.threadId}} @as threadStates;
 
     if (threadStates.length > 0) {
         threadStates @as [ts];
@@ -814,7 +814,7 @@ OUTPUT FORMAT:
     responseSchema agenticsdr.core/LeadClassificationReport
 }
 
-event ConversationStateChanged {
+event trackConversationState {
     threadId String,
     contactEmail String,
     companyId String @optional,
@@ -829,7 +829,7 @@ event ConversationStateChanged {
 
 workflow trackConversationState {
     
-    {ConversationThread {threadId? ConversationStateChanged.threadId}} @as existingStates;
+    {ConversationThread {threadId? trackConversationState.threadId}} @as existingStates;
     
     
     if (existingStates.length > 0) {
@@ -837,16 +837,16 @@ workflow trackConversationState {
         
         
         {ConversationThread {
-            threadId? ConversationStateChanged.threadId,
-            contactIds [ConversationStateChanged.contactEmail],
-            companyId ConversationStateChanged.companyId,
-            companyName ConversationStateChanged.companyName,
-            leadStage ConversationStateChanged.leadStage,
-            dealId ConversationStateChanged.dealId,
-            dealStage ConversationStateChanged.dealStage,
-            latestNoteId ConversationStateChanged.noteId,
-            latestTaskId ConversationStateChanged.taskId,
-            latestMeetingId ConversationStateChanged.meetingId,
+            threadId? trackConversationState.threadId,
+            contactIds [trackConversationState.contactEmail],
+            companyId trackConversationState.companyId,
+            companyName trackConversationState.companyName,
+            leadStage trackConversationState.leadStage,
+            dealId trackConversationState.dealId,
+            dealStage trackConversationState.dealStage,
+            latestNoteId trackConversationState.noteId,
+            latestTaskId trackConversationState.taskId,
+            latestMeetingId trackConversationState.meetingId,
             emailCount existingState.emailCount + 1,
             lastActivity now(),
             updatedAt now()
@@ -856,16 +856,16 @@ workflow trackConversationState {
     } else {
         
         {ConversationThread {
-            threadId ConversationStateChanged.threadId,
-            contactIds [ConversationStateChanged.contactEmail],
-            companyId ConversationStateChanged.companyId,
-            companyName ConversationStateChanged.companyName,
-            leadStage ConversationStateChanged.leadStage,
-            dealId ConversationStateChanged.dealId,
-            dealStage ConversationStateChanged.dealStage,
-            latestNoteId ConversationStateChanged.noteId,
-            latestTaskId ConversationStateChanged.taskId,
-            latestMeetingId ConversationStateChanged.meetingId,
+            threadId trackConversationState.threadId,
+            contactIds [trackConversationState.contactEmail],
+            companyId trackConversationState.companyId,
+            companyName trackConversationState.companyName,
+            leadStage trackConversationState.leadStage,
+            dealId trackConversationState.dealId,
+            dealStage trackConversationState.dealStage,
+            latestNoteId trackConversationState.noteId,
+            latestTaskId trackConversationState.taskId,
+            latestMeetingId trackConversationState.meetingId,
             emailCount 1,
             lastActivity now()
         }} @as result;
@@ -910,65 +910,17 @@ record CRMSyncPayload {
     existingContactId String
 }
 
-event CRMSyncInitiated {
-    shouldCreateCompany Boolean,
-    shouldCreateContact Boolean,
-    shouldCreateDeal Boolean,
-    companyName String @optional,
-    companyDomain String @optional,
-    contactEmail String @optional,
-    contactFirstName String @optional,
-    contactLastName String @optional,
-    leadStage String,
-    leadScore Int,
-    dealStage String,
-    reasoning String,
-    nextAction String,
-    ownerId String,
-    existingCompanyId String @optional,
-    existingContactId String @optional
-}
-
-workflow prepareCRMSync {
-    "contactEmail from LeadIntelligence: " + LeadIntelligence.primaryContactEmail @as primaryEmail;
-    "contactEmail from CRMSyncInitiated: " + CRMSyncInitiated.contactEmail @as conEmail;
-    "ownerId from CRMSyncInitiated: " + CRMSyncInitiated.ownerId @as ownId;
-
-    {CRMSyncPayload {
-        shouldCreateCompany CRMSyncInitiated.shouldCreateCompany,
-        shouldCreateContact CRMSyncInitiated.shouldCreateContact,
-        shouldCreateDeal CRMSyncInitiated.shouldCreateDeal,
-        companyName CRMSyncInitiated.companyName,
-        companyDomain CRMSyncInitiated.companyDomain,
-        contactEmail CRMSyncInitiated.contactEmail,
-        contactFirstName CRMSyncInitiated.contactFirstName,
-        contactLastName CRMSyncInitiated.contactLastName,
-        leadStage CRMSyncInitiated.leadStage,
-        leadScore CRMSyncInitiated.leadScore,
-        dealStage CRMSyncInitiated.dealStage,
-        dealName CRMSyncInitiated.leadStage + " - " + CRMSyncInitiated.dealStage,
-        reasoning CRMSyncInitiated.reasoning,
-        nextAction CRMSyncInitiated.nextAction,
-        ownerId CRMSyncInitiated.ownerId,
-        existingCompanyId CRMSyncInitiated.existingCompanyId,
-        existingContactId CRMSyncInitiated.existingContactId
-    }} @as request;
-    
-    
-    request
-}
-
 flow LeadPipelineOrchestrator {
     EmailQualificationAgent --> shouldProcessLead
     shouldProcessLead --> "SkipEmail" bypassLeadProcessing
     shouldProcessLead --> "ProcessEmail" LeadIntelligenceExtractor
-    LeadIntelligenceExtractor --> {LeadContextRequested {
+    LeadIntelligenceExtractor --> {enrichLeadContext {
         companyDomain LeadIntelligenceExtractor.companyDomain,
         contactEmail LeadIntelligenceExtractor.primaryContactEmail,
         threadId LeadIntelligenceExtractor.emailThreadId
     }}
     enrichLeadContext --> LeadStageClassifier
-    LeadStageClassifier --> {CRMSyncInitiated {
+    LeadStageClassifier --> {hubspot/LeadSyncTriggered {
         shouldCreateCompany LeadStageClassifier.shouldCreateCompany,
         shouldCreateContact LeadStageClassifier.shouldCreateContact,
         shouldCreateDeal LeadStageClassifier.shouldCreateDeal,
@@ -980,32 +932,14 @@ flow LeadPipelineOrchestrator {
         leadStage LeadStageClassifier.leadStage,
         leadScore LeadStageClassifier.leadScore,
         dealStage LeadStageClassifier.dealStage,
+        dealName LeadStageClassifier.leadStage + " - " + LeadStageClassifier.dealStage,
         reasoning LeadStageClassifier.reasoning,
         nextAction LeadStageClassifier.nextAction,
         ownerId EmailQualificationAgent.hubspotOwnerId,
         existingCompanyId EnrichedLeadContext.existingCompanyId,
         existingContactId EnrichedLeadContext.existingContactId
     }}
-    prepareCRMSync --> {hubspot/LeadSyncTriggered {
-        shouldCreateCompany CRMSyncPayload.shouldCreateCompany,
-        shouldCreateContact CRMSyncPayload.shouldCreateContact,
-        shouldCreateDeal CRMSyncPayload.shouldCreateDeal,
-        companyName CRMSyncPayload.companyName,
-        companyDomain CRMSyncPayload.companyDomain,
-        contactEmail CRMSyncPayload.contactEmail,
-        contactFirstName CRMSyncPayload.contactFirstName,
-        contactLastName CRMSyncPayload.contactLastName,
-        leadStage CRMSyncPayload.leadStage,
-        leadScore CRMSyncPayload.leadScore,
-        dealStage CRMSyncPayload.dealStage,
-        dealName CRMSyncPayload.dealName,
-        reasoning CRMSyncPayload.reasoning,
-        nextAction CRMSyncPayload.nextAction,
-        ownerId CRMSyncPayload.ownerId,
-        existingCompanyId CRMSyncPayload.existingCompanyId,
-        existingContactId CRMSyncPayload.existingContactId
-    }}
-    hubspot/syncLeadToCRM --> {ConversationStateChanged {
+    hubspot/syncLeadToCRM --> {trackConversationState {
         threadId LeadIntelligenceExtractor.emailThreadId,
         contactEmail LeadIntelligenceExtractor.primaryContactEmail,
         companyId hubspot/CRMSyncResult.companyId,
