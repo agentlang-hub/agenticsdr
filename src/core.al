@@ -380,7 +380,7 @@ STEP 3: Determine primary contact role
 Analyze email content and titles to assign role:
 
 buyer - Has decision-making and budget authority
-  Look for: CEO, CTO, CFO, VP, Director, "I will approve", budget owner
+  Look for: CEO, CTO, CFO, VP, Director, \"I will approve\", budget owner
   
 champion - Internal advocate who promotes your solution
   Look for: let me introduce you, I love this, enthusiastic tone
@@ -391,13 +391,13 @@ influencer - Evaluates and recommends but doesn't decide
 user - Will use product but doesn't make buying decision
   Look for: Engineer, Analyst, Developer, technical questions
   
-"unknown" - Not enough information to determine role
+\"unknown\" - Not enough information to determine role
 
 STEP 4: Extract additional contacts
 
 Look for other external contacts (NOT Gmail owner) in:
   - CC'd people in recipients
-  - Mentions like "I have included Jane from our team"
+  - Mentions like \"I have included Jane from our team\"
 
 If additional contacts found:
   - allContactEmails: jane at company dot com comma bob at company dot com (comma-separated)
@@ -523,7 +523,7 @@ Before returning, verify ALL of these:
 
 1. primaryContactEmail is NOT the same as gmailOwnerEmail
 2. primaryContactEmail is a valid external email address
-3. primaryContactFirstName and primaryContactLastName are actual names (not "FirstName", "LastName", etc.)
+3. primaryContactFirstName and primaryContactLastName are actual names (not \"FirstName\", \"LastName\", etc.)
 4. primaryContactRole is one of: buyer, champion, influencer, user, unknown
 5. allContactEmails is comma-separated list OR empty string
 6. allContactNames matches allContactEmails (same count, same order)
