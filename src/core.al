@@ -115,8 +115,10 @@ CATEGORY: unknown - Unclear but Likely Business
 Use this when the email seems business-related but does not fit the above categories.
 Examples of emails to PROCESS:
   - Brief reply like Thanks, looking into this
-  - Forwarded email with business context
+  - Forwarded email with business context (FW: or Fwd: in subject)
   - Question from external party about the product
+  - Reply-all responses on existing business thread
+  - Out-of-office replies that mention they will respond later with business context
 
 SET needsProcessing = FALSE if the email matches ANY of these patterns:
 
@@ -177,12 +179,15 @@ If YES:
 
 STEP 3: Check if this is internal-only communication
 Extract the domain from {{InboundEmailPayload.gmailOwnerEmail}}
-Check if ALL participants sender plus all recipients are from the same domain
+Example: sales@mycompany.com has domain mycompany.com
+Check if ALL participants sender plus all recipients are from the same domain mycompany.com
 If YES all internal:
   - SET needsProcessing = false
   - SET category = unknown
   - SET reason = Internal team communication
   - Go directly to SECTION 4 to construct output
+
+NOTE: If email is internal but discusses a customer or prospect (forwarded external email or internal sales discussion) still consider processing it.
 
 STEP 4: Look for business opportunity signals
 Search {{InboundEmailPayload.subject}} and {{InboundEmailPayload.body}} for these keywords:
@@ -291,7 +296,7 @@ Before returning your output, verify ALL of these:
 CRITICAL RULES
 ================================================================================
 
-1. NEVER wrap your response in markdown code blocks like ```json or backticks
+1. NEVER wrap your response in markdown code blocks or backticks
 2. NEVER add language identifiers or markdown formatting
 3. NEVER modify, truncate, or summarize any of the input email fields
 4. ALWAYS copy sender, recipients, subject, body, date, threadId, gmailOwnerEmail, hubspotOwnerId EXACTLY as provided
@@ -355,25 +360,39 @@ You must find the EXTERNAL contact (the prospect or customer).
 STEP 1: Determine who the primary contact is
 
 If {{EmailQualificationResult.sender}} equals {{EmailQualificationResult.gmailOwnerEmail}}:
-  - This is OUTBOUND (your sales rep sent to prospect)
+  - This is OUTBOUND your sales rep sent email to prospect
   - Extract primary contact FROM recipients field
+  - If multiple recipients parse the first external email address
   
 If {{EmailQualificationResult.recipients}} contains {{EmailQualificationResult.gmailOwnerEmail}}:
-  - This is INBOUND (prospect sent to your sales rep)
+  - This is INBOUND prospect sent email to your sales rep
   - Extract primary contact FROM sender field
+
+If BOTH sender and recipients contain {{EmailQualificationResult.gmailOwnerEmail}} (reply-all scenario):
+  - This is a GROUP CONVERSATION
+  - Primary contact is the sender IF sender is not gmailOwnerEmail
+  - Otherwise extract first external recipient from recipients list
 
 VALIDATION: primaryContactEmail must NEVER equal gmailOwnerEmail
 
+EDGE CASES:
+- Multiple recipients: Parse as comma-separated and extract first non-gmailOwner email
+- Malformed email: john.doe@acmecorp.com without name - use john as firstName, doe as lastName from email
+- No name found anywhere: Use first part of email before @ as firstName, empty lastName
+
 STEP 2: Parse email and name from the primary contact
 
-Common email formats:
+Common email formats you will encounter:
   - John Doe with email john@company.com extracts to email john@company.com and name John Doe
+  - John Doe angle bracket john@company.com angle bracket extracts same way
   - Just john@company.com means check signature for name
+  - Multiple recipients comma separated like john@company.com, jane@company.com means take first one
   
 Extract firstName and lastName:
-  - John Doe extracts to firstName John and lastName Doe
-  - Just John extracts to firstName John and lastName empty
-  - If no name in header look in email signature for Best regards John Doe or Thanks John
+  - Full name John Doe extracts to firstName John and lastName Doe
+  - Single name John extracts to firstName John and lastName empty string
+  - Email-only john.doe@company.com can extract firstName john and lastName doe from email prefix
+  - If no name in header look in email signature for Best regards John Doe or Thanks John or similar patterns
 
 STEP 3: Determine primary contact role
 
@@ -475,44 +494,44 @@ CRITICAL: These fields must be copied EXACTLY from input - DO NOT modify:
 OUTPUT STRUCTURE:
 
 {
-  \"primaryContactEmail\": \"john.doe@acmecorp.com\",
-  \"primaryContactFirstName\": \"John\",
-  \"primaryContactLastName\": \"Doe\",
-  \"primaryContactRole\": \"buyer\",
-  \"allContactEmails\": \"jane@acmecorp.com,bob@acmecorp.com\" OR \"\" if only one contact,
-  \"allContactNames\": \"Jane Smith,Bob Johnson\" OR \"\" if only one contact,
-  \"companyName\": \"Acme Corp\" OR \"\" if none found,
-  \"companyDomain\": \"acmecorp.com\" OR \"\" if none found,
-  \"companyConfidence\": \"high\" OR \"medium\" OR \"low\" OR \"none\",
-  \"emailSubject\": \"{{EmailQualificationResult.subject}}\",
-  \"emailBody\": \"{{EmailQualificationResult.body}}\",
-  \"emailDate\": \"{{EmailQualificationResult.date}}\",
-  \"emailThreadId\": \"{{EmailQualificationResult.threadId}}\",
-  \"emailSender\": \"{{EmailQualificationResult.sender}}\",
-  \"emailRecipients\": \"{{EmailQualificationResult.recipients}}\",
-  \"gmailOwnerEmail\": \"{{EmailQualificationResult.gmailOwnerEmail}}\",
-  \"hubspotOwnerId\": \"{{EmailQualificationResult.hubspotOwnerId}}\"
+  primaryContactEmail: john.doe@acmecorp.com,
+  primaryContactFirstName: John,
+  primaryContactLastName: Doe,
+  primaryContactRole: buyer,
+  allContactEmails: jane@acmecorp.com,bob@acmecorp.com OR empty string if only one contact,
+  allContactNames: Jane Smith,Bob Johnson OR empty string if only one contact,
+  companyName: Acme Corp OR empty string if none found,
+  companyDomain: acmecorp.com OR empty string if none found,
+  companyConfidence: high OR medium OR low OR none,
+  emailSubject: copy exactly from {{EmailQualificationResult.subject}},
+  emailBody: copy exactly from {{EmailQualificationResult.body}},
+  emailDate: copy exactly from {{EmailQualificationResult.date}},
+  emailThreadId: copy exactly from {{EmailQualificationResult.threadId}},
+  emailSender: copy exactly from {{EmailQualificationResult.sender}},
+  emailRecipients: copy exactly from {{EmailQualificationResult.recipients}},
+  gmailOwnerEmail: copy exactly from {{EmailQualificationResult.gmailOwnerEmail}},
+  hubspotOwnerId: copy exactly from {{EmailQualificationResult.hubspotOwnerId}}
 }
 
 EXAMPLE OUTPUT:
 {
-  \"primaryContactEmail\": \"john.doe@acmecorp.com\",
-  \"primaryContactFirstName\": \"John\",
-  \"primaryContactLastName\": \"Doe\",
-  \"primaryContactRole\": \"buyer\",
-  \"allContactEmails\": \"\",
-  \"allContactNames\": \"\",
-  \"companyName\": \"Acme Corp\",
-  \"companyDomain\": \"acmecorp.com\",
-  \"companyConfidence\": \"high\",
-  \"emailSubject\": \"Enterprise Plan Pricing\",
-  \"emailBody\": \"Hi, I'm interested in your Enterprise plan for 100 users...\",
-  \"emailDate\": \"2026-01-23T10:30:00Z\",
-  \"emailThreadId\": \"thread_abc123\",
-  \"emailSender\": \"John Doe <john.doe@acmecorp.com>\",
-  \"emailRecipients\": \"sales@mycompany.com\",
-  \"gmailOwnerEmail\": \"sales@mycompany.com\",
-  \"hubspotOwnerId\": \"12345\"
+  primaryContactEmail: john.doe@acmecorp.com,
+  primaryContactFirstName: John,
+  primaryContactLastName: Doe,
+  primaryContactRole: buyer,
+  allContactEmails: empty string,
+  allContactNames: empty string,
+  companyName: Acme Corp,
+  companyDomain: acmecorp.com,
+  companyConfidence: high,
+  emailSubject: Enterprise Plan Pricing,
+  emailBody: Hi I am interested in your Enterprise plan for 100 users,
+  emailDate: 2026-01-23T10:30:00Z,
+  emailThreadId: thread_abc123,
+  emailSender: John Doe from john.doe@acmecorp.com,
+  emailRecipients: sales@mycompany.com,
+  gmailOwnerEmail: sales@mycompany.com,
+  hubspotOwnerId: 12345
 }
 
 ================================================================================
@@ -523,7 +542,7 @@ Before returning, verify ALL of these:
 
 1. primaryContactEmail is NOT the same as gmailOwnerEmail
 2. primaryContactEmail is a valid external email address
-3. primaryContactFirstName and primaryContactLastName are actual names (not \"FirstName\", \"LastName\", etc.)
+3. primaryContactFirstName and primaryContactLastName are actual names not placeholder text like FirstName or LastName
 4. primaryContactRole is one of: buyer, champion, influencer, user, unknown
 5. allContactEmails is comma-separated list OR empty string
 6. allContactNames matches allContactEmails (same count, same order)
@@ -670,30 +689,46 @@ Determine Lead Stage based on score AND previous stage:
 - QUALIFIED (51-100): Strong buying signals, clear opportunity
 - DISQUALIFIED (<0): Not interested or invalid
 
-IMPORTANT: Consider previous stage ({{EnrichedLeadContext.threadStateLeadStage}}) and email count ({{EnrichedLeadContext.threadStateEmailCount}}):
-- If threadStateExists is true, review progression from previous stage
-- Can move forward or backward based on latest email
-- Multiple emails (count > 1) in ENGAGED stage may indicate qualification
-- Don't automatically qualify just because of email count - require genuine buying signals
+IMPORTANT CONTEXT AWARENESS:
+Consider previous stage {{EnrichedLeadContext.threadStateLeadStage}} and email count {{EnrichedLeadContext.threadStateEmailCount}}:
+
+If threadStateExists is true:
+  - Review progression from previous stage
+  - Stage can move FORWARD if email shows progress like NEW to ENGAGED to QUALIFIED
+  - Stage can move BACKWARD if email shows regression like QUALIFIED to ENGAGED if they go cold
+  - Multiple emails count greater than 1 in ENGAGED stage MAY indicate qualification BUT only if genuine buying signals present
+  - Do NOT automatically qualify just because of email count require actual buying intent
+
+If threadStateExists is false:
+  - This is first email in conversation
+  - Score purely based on email content
+  - Be conservative with qualification on first email unless very strong signals
+
+SCORING ADJUSTMENT FOR CONTEXT:
+- If previous stage was QUALIFIED and current email maintains interest: Keep score high 60 plus
+- If previous stage was ENGAGED and current shows buying intent: Boost score by 10
+- If previous stage was NEW and current asks questions: Normal scoring no bonus
 
 2. DEAL STAGE ASSESSMENT:
 
 Analyze email content to determine deal progression:
-- DISCOVERY: \"Tell me about\", \"How does\", \"Can you explain\", feature questions, early exploration
-- MEETING: \"Schedule\", \"Demo\", \"Let's meet\", \"Calendar invite\", confirmed calls
-- PROPOSAL: \"Pricing\", \"Quote\", \"Send proposal\", \"Contract\", \"What does it cost\"
-- NEGOTIATION: \"Legal review\", \"Discount\", \"Terms\", approval processes, stakeholder buy-in
-- CLOSED_WON: \"Signed\", \"Purchase order\", \"Let's proceed\", \"Approved\"
-- CLOSED_LOST: \"Going with competitor\", \"Not moving forward\", \"Decided against\"
+- DISCOVERY: Tell me about, How does it work, Can you explain, feature questions, early exploration
+- MEETING: Schedule, Demo request, Let us meet, Calendar invite, confirmed calls
+- PROPOSAL: Pricing request, Quote needed, Send proposal, Contract discussion, What does it cost
+- NEGOTIATION: Legal review, Discount request, Terms discussion, approval processes, stakeholder buy-in
+- CLOSED_WON: Signed contract, Purchase order received, Let us proceed, Approved by leadership
+- CLOSED_LOST: Going with competitor, Not moving forward, Decided against purchasing
 - NONE: No clear deal signals, early stage, or just informational
 
 3. CREATE FLAGS - Determine what CRM records to create:
 
 shouldCreateDeal: Set to true ONLY if ALL conditions met:
-- Lead stage is QUALIFIED (score >= 51)
-- Deal stage is DISCOVERY or higher (not NONE, not CLOSED_LOST)
-- No existing deal in thread (check if threadStateExists and has dealId)
-- Clear opportunity signals present
+- Lead stage is QUALIFIED with score 51 or higher
+- Deal stage is DISCOVERY or higher NOT NONE and NOT CLOSED_LOST
+- No existing deal already exists check {{EnrichedLeadContext.threadStateExists}} and verify no dealId present
+- Clear opportunity signals present in the email
+
+IMPORTANT: If threadStateExists is true AND you see previous dealId data, do NOT create a new deal even if qualified. A deal already exists for this conversation.
 
 shouldCreateContact: Set to true if:
 - No existing contact ({{EnrichedLeadContext.hasContact}} is false)
@@ -701,51 +736,80 @@ shouldCreateContact: Set to true if:
 - Valid contact information extracted from email
 
 shouldCreateCompany: Set to true if:
-- No existing company ({{EnrichedLeadContext.hasCompany}} is false)
-- AND companyConfidence is \"high\" or \"medium\" (NOT \"low\" or \"none\")
-- Valid company domain extracted (not personal email domain)
+- No existing company in CRM where {{EnrichedLeadContext.hasCompany}} is false
+- AND companyConfidence is high or medium NOT low or none
+- AND valid company domain extracted that is not a personal email domain
 
 4. NEXT ACTION:
-Provide specific, actionable follow-up recommendation based on:
+Provide specific actionable follow-up recommendation based on:
 - Current lead stage and deal stage
-- Email content and context
-- Previous interaction history (if email count > 1)
-Examples: \"Send pricing deck for Enterprise plan\", \"Schedule product demo\", \"Follow up on technical questions\", \"Send case studies for [industry]\"
+- Email content and context  
+- Previous interaction history if email count is greater than 1
+Examples: Send pricing deck for Enterprise plan, Schedule product demo, Follow up on technical questions, Send case studies for their industry
 
 5. REASONING:
-Explain your analysis clearly:
-- Key signals that influenced scoring
-- Why you chose the lead stage
-- Justification for deal stage
-- Why create flags are set to true/false
+Explain your analysis clearly including:
+- Key signals that influenced scoring with specific examples from email
+- Why you chose the lead stage referencing score calculation
+- Justification for deal stage based on email content
+- Why each create flag is set to true or false
+- If conversation history exists explain how previous stage influenced decision
+
+6. CONFIDENCE LEVEL:
+Assign confidence based on clarity of signals:
+- high: Clear unambiguous buying signals or explicit requests, multiple strong indicators
+- medium: Some buying signals but mixed with other content, moderate certainty
+- low: Weak signals or highly ambiguous content, uncertain classification
 
 RETURN FORMAT - Return agenticsdr.core/LeadClassificationReport:
 {
-  \"leadStage\": \"QUALIFIED\",
-  \"leadScore\": 75,
-  \"dealStage\": \"PROPOSAL\",
-  \"shouldCreateDeal\": true,
-  \"shouldCreateContact\": true,
-  \"shouldCreateCompany\": true,
-  \"reasoning\": \"Customer asked for pricing with specific timeline for Q2 implementation. Multiple stakeholders CC'd including VP of Engineering. Score: 75 (40 for pricing intent + 25 for timeline + 10 for tech questions). Previous stage was ENGAGED with 3 emails in thread, now progressing to QUALIFIED based on clear buying signals.\",
-  \"nextAction\": \"Send detailed pricing proposal for Enterprise plan with Q2 implementation timeline and technical integration guide\",
-  \"confidence\": \"high\"
+  leadStage: QUALIFIED,
+  leadScore: 75,
+  dealStage: PROPOSAL,
+  shouldCreateDeal: true,
+  shouldCreateContact: true,
+  shouldCreateCompany: true,
+  reasoning: Customer asked for pricing with specific timeline for Q2 implementation. Multiple stakeholders CCd including VP of Engineering. Score is 75 calculated as 40 for pricing intent plus 25 for timeline plus 10 for tech questions. Previous stage was ENGAGED with 3 emails in thread now progressing to QUALIFIED based on clear buying signals,
+  nextAction: Send detailed pricing proposal for Enterprise plan with Q2 implementation timeline and technical integration guide,
+  confidence: high
 }
 
+CRITICAL VALIDATION BEFORE OUTPUT:
+
+1. Check if dealId already exists in thread:
+   - Look at {{EnrichedLeadContext.threadStateExists}} and check for dealId in thread
+   - If deal already exists set shouldCreateDeal to false even if qualified
+   - Avoid creating duplicate deals for same conversation
+
+2. Validate score matches stage:
+   - NEW stage must have score 0 to 20
+   - ENGAGED stage must have score 21 to 50
+   - QUALIFIED stage must have score 51 to 100
+   - DISQUALIFIED stage must have score less than 0
+   - If score and stage mismatch adjust one of them
+
+3. Validate create flags logic:
+   - If hasCompany is true then shouldCreateCompany must be false
+   - If hasContact is true then shouldCreateContact should usually be false unless updating
+   - If leadStage is not QUALIFIED then shouldCreateDeal must be false
+
 CRITICAL RULES:
-- Be conservative with scoring - require clear evidence for high scores
-- Consider conversation history (threadStateEmailCount and previous leadStage)
-- Don't create deals prematurely - need genuine QUALIFIED signals
-- Check existing CRM data carefully before setting create flags
-- Reasoning should reference specific email content and scoring rationale
-- nextAction should be specific and actionable, not generic
-- Return ONLY the LeadClassificationReport structure - no additional text
+- Be conservative with scoring require clear evidence for high scores not assumptions
+- Consider conversation history threadStateEmailCount and previous leadStage always
+- Do NOT create deals prematurely need genuine QUALIFIED signals with score 51 plus
+- Check existing CRM data carefully before setting create flags to avoid duplicates
+- Reasoning must reference specific email content and scoring rationale with examples
+- nextAction must be specific and actionable not generic advice like follow up
+- confidence should reflect certainty of your classification high for clear signals low for ambiguous
+- Return ONLY the LeadClassificationReport structure no additional text or commentary
 
 OUTPUT FORMAT:
 - NEVER wrap response in markdown code blocks or backticks
 - NEVER add JSON formatting with backticks or language identifiers
 - DO NOT use markdown formatting
-- Return clean JSON matching LeadClassificationReport schema exactly",
+- Return clean JSON matching LeadClassificationReport schema exactly
+- Ensure all enum values match exactly: NEW ENGAGED QUALIFIED DISQUALIFIED for leadStage
+- Ensure dealStage matches: DISCOVERY MEETING PROPOSAL NEGOTIATION CLOSED_WON CLOSED_LOST NONE",
     retry classifyRetry,
     responseSchema agenticsdr.core/LeadClassificationReport
 }
@@ -1010,22 +1074,35 @@ STAGE 6: CONVERSATION STATE TRACKING (trackConversationState workflow)
 
 EXECUTION INSTRUCTIONS:
 
-1. Accept InboundEmailPayload from the message
-2. Execute each stage in order through the flow
-3. Pass outputs from each stage as inputs to the next stage
-4. Ensure all data flows correctly between stages
+1. Accept InboundEmailPayload from the message input
+2. Execute each stage in order through the LeadPipelineOrchestrator flow
+3. Pass outputs from each stage as inputs to the next stage maintaining data integrity
+4. Ensure all data flows correctly between stages without loss
 5. Handle both qualified and unqualified emails appropriately
-6. For unqualified emails: bypass to QualificationRejection
-7. For qualified emails: process through all stages to CRM sync
+6. For unqualified emails bypass directly to QualificationRejection workflow
+7. For qualified emails process through all 6 stages to complete CRM sync
+
+ERROR HANDLING:
+- If any stage fails preserve as much data as possible
+- Missing data should use empty strings or default values not null
+- If CRM sync fails still attempt to track conversation state
+- Log errors but continue pipeline execution where possible
 
 KEY PRINCIPLES:
 
-- **Data Integrity**: Preserve all email data exactly through the pipeline
-- **Context Awareness**: Use existing CRM data and conversation history in decisions
-- **Conservative Qualification**: Better to process borderline cases than miss opportunities
-- **Accurate Classification**: Base lead scoring on clear signals from email content
-- **Actionable Outputs**: Generate specific, actionable next steps for sales follow-up
-- **Complete CRM Sync**: Ensure all relevant data reaches HubSpot for sales team visibility
+- Data Integrity: Preserve all email data exactly through the pipeline never truncate or modify
+- Context Awareness: Use existing CRM data and conversation history in all decisions
+- Conservative Qualification: Better to process borderline cases than miss sales opportunities
+- Accurate Classification: Base lead scoring on clear signals from email content not assumptions
+- Actionable Outputs: Generate specific actionable next steps for sales follow-up not generic advice
+- Complete CRM Sync: Ensure all relevant data reaches HubSpot for sales team visibility
+- Conversation Continuity: Always check thread history to understand conversation progression
+
+DATA FLOW VALIDATION:
+- EmailQualificationResult must pass ALL email fields to LeadIntelligence unchanged
+- LeadIntelligence must pass ALL email fields to downstream workflows unchanged
+- Each stage must preserve data from previous stages
+- Final ConversationThread must have complete context from entire pipeline
 
 The email data is provided in the message. Execute the LeadPipelineOrchestrator flow systematically through all stages."
 }
