@@ -34,7 +34,7 @@
     }
   },
   "agenticsdr": {
-    "agenticsdr.core/SDRConfig": {
+    "agenticsdr.core/SalesEngagementConfig": {
       "gmailOwnerEmail": "#js getLocalEnv('GMAIL_EMAIL', '')",
       "hubspotOwnerId": "#js getLocalEnv('HUBSPOT_OWNER_ID', '')"
     }

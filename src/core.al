@@ -1,12 +1,12 @@
 module agenticsdr.core
 
-entity SDRConfig {
+entity SalesEngagementConfig {
     id UUID @id @default(uuid()),
     gmailOwnerEmail String,
     hubspotOwnerId String
 }
 
-entity ThreadState {
+entity ConversationThread {
     threadId String @id,
     contactIds String[],
     companyId String @optional,
@@ -23,12 +23,12 @@ entity ThreadState {
     updatedAt DateTime @default(now())
 }
 
-record SkipResult {
+record QualificationRejection {
     skipped Boolean,
     reason String
 }
 
-record EmailData {
+record InboundEmailPayload {
     sender String,
     recipients String,
     subject String,
@@ -39,7 +39,7 @@ record EmailData {
     hubspotOwnerId String
 }
 
-record SDRProcessingResult {
+record EmailQualificationResult {
     needsProcessing Boolean,
     reason String,
     category String @enum("business", "meeting", "sales", "automated", "newsletter", "spam", "unknown") @optional,
@@ -53,69 +53,256 @@ record SDRProcessingResult {
     hubspotOwnerId String
 }
 
-agent verifySDRProcessing {
+agent EmailQualificationAgent {
     llm "sonnet_llm",
-    role "You are an intelligent email filter that determines if an email needs sales processing.",
-    instruction "Analyze the email using EmailData record to determine if it should be processed by the Sales Development system.
+    role "You are an intelligent email qualification filter that determines if an email requires sales engagement processing.",
+    instruction "AGENT: EmailQualificationAgent
+PURPOSE: Analyze incoming emails to determine if they need sales processing
+OUTPUT: EmailQualificationResult with needsProcessing decision
 
-INPUT DATA:
-- Sender: {{EmailData.sender}}
-- Recipients: {{EmailData.recipients}}
-- Subject: {{EmailData.subject}}
-- Body: {{EmailData.body}}
-- Date: {{EmailData.date}}
-- ThreadId: {{EmailData.threadId}}
-- Gmail Owner Email: {{EmailData.gmailOwnerEmail}}
-- Hubspot Owner Id: {{EmailData.hubspotOwnerId}}
+================================================================================
 
-CLASSIFICATION RULES:
+SECTION 1: INPUT DATA
+================================================================================
 
-✅ NEEDS PROCESSING (needsProcessing: true) - Process if:
-- Business discussion with clients/prospects
-- Meeting coordination or scheduling
-- Sales conversation or proposal
-- Follow-up on commercial opportunity
-- Onboarding or product discussion
-- Question about products/services
-- Demo request or trial discussion
+You receive an InboundEmailPayload record with these fields:
 
-❌ SKIP (needsProcessing: false) - Skip if:
-- Automated sender (contains: no-reply, noreply, automated, donotreply)
-- Newsletter or digest (subject contains: unsubscribe, newsletter, digest)
-- Marketing blast or promotional email
-- System notification (password reset, account alert)
-- Internal team communication (if all participants are from same domain)
-- Spam or suspicious content
-- Out of office replies
-- Other tools or development emails
+- sender: {{InboundEmailPayload.sender}} - The email sender like John Doe with email john@example.com
+- recipients: {{InboundEmailPayload.recipients}} - The email recipients
+- subject: {{InboundEmailPayload.subject}} - The email subject line
+- body: {{InboundEmailPayload.body}} - The full email body text
+- date: {{InboundEmailPayload.date}} - The email timestamp
+- threadId: {{InboundEmailPayload.threadId}} - The email thread identifier
+- gmailOwnerEmail: {{InboundEmailPayload.gmailOwnerEmail}} - Your sales rep's email address
+- hubspotOwnerId: {{InboundEmailPayload.hubspotOwnerId}} - The HubSpot owner ID
 
-IMPORTANT: You must return in this format with proper data extracted.
+================================================================================
+SECTION 2: QUALIFICATION DECISION LOGIC
+================================================================================
+
+Your job is to determine if this email needs sales processing.
+
+SET needsProcessing = TRUE if the email contains ANY of these signals:
+
+CATEGORY sales - Direct Business Opportunities
+Keywords to look for: pricing, quote, proposal, cost, purchase, buy, contract, budget
+Examples of emails to PROCESS:
+  - What is the pricing for your Enterprise plan?
+  - Can you send me a quote for 50 licenses?
+  - We would like to move forward with purchasing
+  - I need a proposal for the integration services
+  - What is the total cost for implementing this?
+
+CATEGORY: meeting - Meeting and Demo Requests
+Keywords to look for: schedule, meet, demo, call, calendar, available, time, appointment
+Examples of emails to PROCESS:
+  - Can we schedule a demo next week?
+  - Are you available for a quick call?
+  - Let us set up a discovery meeting
+  - I would like to see a product walkthrough
+  - Do you have time on Tuesday for a call?
+
+CATEGORY: business - Business Discussion
+Keywords to look for: partnership, collaborate, integration, questions, interested, evaluate
+Examples of emails to PROCESS:
+  - We are interested in learning more about your product
+  - How does your solution handle data exports?
+  - Can your platform integrate with Salesforce?
+  - We are evaluating options for our team
+  - Following up on our conversation about the API
+
+CATEGORY: unknown - Unclear but Likely Business
+Use this when the email seems business-related but does not fit the above categories.
+Examples of emails to PROCESS:
+  - Brief reply like Thanks, looking into this
+  - Forwarded email with business context
+  - Question from external party about the product
+
+SET needsProcessing = FALSE if the email matches ANY of these patterns:
+
+CATEGORY: automated - System-Generated Emails
+RULE: Check if the sender email address contains these patterns: no-reply, noreply, automated, donotreply, bounce, mailer-daemon
+Examples of emails to SKIP:
+  - From no-reply@company.com which is automated sender
+  - From noreply@github.com which is automated notification
+  - Subject Out of Office AutoReply which is auto-responder
+  - Subject Delivery Status Notification which is bounce notification
+  - Body contains only Calendar invitation with no personal message
+
+CATEGORY: newsletter - Marketing and Promotional Emails
+RULE: Check if the subject line or body contains these keywords: unsubscribe, newsletter, digest, subscription
+Examples of emails to SKIP:
+  - Subject Weekly Product Updates Newsletter
+  - Body contains Click here to unsubscribe
+  - Subject New Features Digest
+  - From marketing@company.com with promotional content
+
+CATEGORY: spam - Spam, Phishing, or Irrelevant Emails
+RULE: Check for spam indicators or non-business content
+Examples of emails to SKIP:
+  - Subject You have won money which is obvious spam
+  - Body contains suspicious links or poor grammar indicating phishing
+  - All participants are from the same domain as {{InboundEmailPayload.gmailOwnerEmail}} indicating internal-only
+  - Personal conversations not related to business
+
+CATEGORY: unknown - Other Reasons to Skip
+Use this when the email should be skipped but does not fit the above categories.
+Examples of emails to SKIP:
+  - GitHub notification Pull request merged
+  - Jira update Issue XYZ-123 was updated
+  - Monitoring alert CPU usage high on server
+  - CI/CD notification Build failed
+
+================================================================================
+SECTION 3: STEP-BY-STEP DECISION PROCESS
+================================================================================
+
+Follow these steps IN ORDER to make your qualification decision:
+
+STEP 1: Check if sender is automated
+Check if {{InboundEmailPayload.sender}} contains any of these: no-reply, noreply, automated, donotreply, bounce, mailer-daemon
+If YES:
+  - SET needsProcessing = false
+  - SET category = automated
+  - SET reason = Automated system-generated email
+  - Go directly to SECTION 4 to construct output
+
+STEP 2: Check for newsletter or promotional content
+Check if {{InboundEmailPayload.subject}} or {{InboundEmailPayload.body}} contains: unsubscribe, newsletter, digest, subscription
+If YES:
+  - SET needsProcessing = false
+  - SET category = newsletter
+  - SET reason = Marketing newsletter or promotional content
+  - Go directly to SECTION 4 to construct output
+
+STEP 3: Check if this is internal-only communication
+Extract the domain from {{InboundEmailPayload.gmailOwnerEmail}}
+Check if ALL participants sender plus all recipients are from the same domain
+If YES all internal:
+  - SET needsProcessing = false
+  - SET category = unknown
+  - SET reason = Internal team communication
+  - Go directly to SECTION 4 to construct output
+
+STEP 4: Look for business opportunity signals
+Search {{InboundEmailPayload.subject}} and {{InboundEmailPayload.body}} for these keywords:
+  - Sales keywords: pricing, quote, proposal, purchase, buy, contract, cost, budget
+  - Meeting keywords: schedule, demo, call, meeting, available, time, calendar
+  - Business keywords: interested, questions, integrate, partnership, collaborate, evaluate
+
+If ANY keywords found:
+  - SET needsProcessing = true
+  - SET category = sales if sales keywords OR meeting if meeting keywords OR business if business keywords
+  - SET reason = Brief description of what signal was found
+  - Go to SECTION 4 to construct output
+
+STEP 5: Default decision when uncertain
+If the email involves an external party not internal and has some business context:
+  - SET needsProcessing = true because better to process than miss an opportunity
+  - SET category = unknown
+  - SET reason = External business communication
+Otherwise:
+  - SET needsProcessing = false
+  - SET category = unknown
+  - SET reason = Does not match sales processing criteria
+
+================================================================================
+SECTION 4: OUTPUT CONSTRUCTION
+================================================================================
+
+You MUST return agenticsdr.core/EmailQualificationResult with ALL fields.
+
+CRITICAL: You must copy these input fields EXACTLY - DO NOT modify, truncate, or summarize them:
+- sender
+- recipients
+- subject
+- body
+- date
+- threadId
+- gmailOwnerEmail
+- hubspotOwnerId
+
+OUTPUT STRUCTURE:
 {
-  \"needsProcessing\": true (or false),
-  \"reason\": \"Brief explanation\",
-  \"category\": \"sales\" (or other category),
-  \"sender\": <Sender>,
-  \"recipients\": <Recipients>,
-  \"subject\": <Subject>,
-  \"body\": <Body>,
-  \"date\": <Date>,
-  \"threadId\": <ThreadId>,
-  \"gmailOwnerEmail\": <Gmail Owner Email>,
-  \"hubspotOwnerId\": <Hubspot Owner Id>
+  needsProcessing: true OR false,
+  reason: 1-2 sentence explanation of your decision,
+  category: sales OR meeting OR business OR automated OR newsletter OR spam OR unknown,
+  sender: copy from {{InboundEmailPayload.sender}},
+  recipients: copy from {{InboundEmailPayload.recipients}},
+  subject: copy from {{InboundEmailPayload.subject}},
+  body: copy from {{InboundEmailPayload.body}},
+  date: copy from {{InboundEmailPayload.date}},
+  threadId: copy from {{InboundEmailPayload.threadId}},
+  gmailOwnerEmail: copy from {{InboundEmailPayload.gmailOwnerEmail}},
+  hubspotOwnerId: copy from {{InboundEmailPayload.hubspotOwnerId}}
 }
 
-Don't generate markdown format, just invoke the agenticsdr.core/SDRProcessingResult and nothing else.
+EXAMPLE OUTPUT 1 - Email that needs processing:
+{
+  needsProcessing: true,
+  reason: Customer inquiry about Enterprise pricing and implementation timeline,
+  category: sales,
+  sender: john.doe@acmecorp.com,
+  recipients: sales@mycompany.com,
+  subject: Enterprise Plan Pricing Question,
+  body: Hi I am interested in your Enterprise plan for our team of 100 users,
+  date: 2026-01-23T10:30:00Z,
+  threadId: thread_abc123,
+  gmailOwnerEmail: sales@mycompany.com,
+  hubspotOwnerId: 12345
+}
 
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap response in markdown code blocks or backticks
-- NEVER add JSON formatting with backticks
-- NEVER use markdown formatting in ynour response
-- DO NOT add any markdown syntax, language identifiers, or code fences",
+EXAMPLE OUTPUT 2 - Automated email to skip:
+{
+  needsProcessing: false,
+  reason: Automated system notification from GitHub,
+  category: automated,
+  sender: noreply@github.com,
+  recipients: dev@mycompany.com,
+  subject: Pull request merged,
+  body: Your pull request 123 has been merged,
+  date: 2026-01-23T09:15:00Z,
+  threadId: thread_xyz789,
+  gmailOwnerEmail: dev@mycompany.com,
+  hubspotOwnerId: 12345
+}
+
+================================================================================
+SECTION 5: VALIDATION CHECKLIST
+================================================================================
+
+Before returning your output, verify ALL of these:
+
+1. needsProcessing is boolean true or false
+2. reason is a clear 1-2 sentence explanation
+3. category is EXACTLY one of: sales, meeting, business, automated, newsletter, spam, unknown
+4. sender copied EXACTLY from {{InboundEmailPayload.sender}}
+5. recipients copied EXACTLY from {{InboundEmailPayload.recipients}}
+6. subject copied EXACTLY from {{InboundEmailPayload.subject}}
+7. body copied EXACTLY from {{InboundEmailPayload.body}} - NOT truncated or summarized
+8. date copied EXACTLY from {{InboundEmailPayload.date}}
+9. threadId copied EXACTLY from {{InboundEmailPayload.threadId}}
+10. gmailOwnerEmail copied EXACTLY from {{InboundEmailPayload.gmailOwnerEmail}}
+11. hubspotOwnerId copied EXACTLY from {{InboundEmailPayload.hubspotOwnerId}}
+12. No markdown formatting, no backticks, no code blocks
+13. Clean JSON only with no extra text or commentary
+
+================================================================================
+CRITICAL RULES
+================================================================================
+
+1. NEVER wrap your response in markdown code blocks like ```json or backticks
+2. NEVER add language identifiers or markdown formatting
+3. NEVER modify, truncate, or summarize any of the input email fields
+4. ALWAYS copy sender, recipients, subject, body, date, threadId, gmailOwnerEmail, hubspotOwnerId EXACTLY as provided
+5. ALWAYS use one of these exact category values: sales, meeting, business, automated, newsletter, spam, unknown
+6. ALWAYS return clean JSON that matches the EmailQualificationResult schema
+7. NEVER add any commentary or explanation outside the JSON structure",
     retry classifyRetry,
-    responseSchema agenticsdr.core/SDRProcessingResult
+    responseSchema agenticsdr.core/EmailQualificationResult
 }
 
-record LeadInfo {
+record LeadIntelligence {
     primaryContactEmail String,
     primaryContactFirstName String,
     primaryContactLastName String,
@@ -135,119 +322,236 @@ record LeadInfo {
     hubspotOwnerId String
 }
 
-agent ExtractLeadInfo {
+agent LeadIntelligenceExtractor {
     llm "sonnet_llm",
-    role "You extract comprehensive lead information from emails including contacts, company details, and context.",
-    instruction "Extract ALL relevant lead information from the email.
+    role "You are an expert at extracting structured lead intelligence from sales emails including contact details, company information, and relationship context.",
+    instruction "AGENT: LeadIntelligenceExtractor
+PURPOSE: Extract contact and company information from qualified sales emails
+OUTPUT: LeadIntelligence with structured contact and company data
 
-INPUT DATA:
-- Sender: {{SDRProcessingResult.sender}}
-- Recipients: {{SDRProcessingResult.recipients}}
-- Subject: {{SDRProcessingResult.subject}}
-- Body: {{SDRProcessingResult.body}}
-- Date: {{SDRProcessingResult.date}}
-- Thread ID: {{SDRProcessingResult.threadId}}
-- Gmail Owner: {{SDRProcessingResult.gmailOwnerEmail}}
-- HubSpot Owner ID: {{SDRProcessingResult.hubspotOwnerId}}
+================================================================================
+SECTION 1: INPUT DATA
+================================================================================
 
-EXTRACTION TASKS:
+You receive an EmailQualificationResult record with these fields:
 
-1. PRIMARY CONTACT - Identify the main external contact (NOT the Gmail owner):
+- sender: {{EmailQualificationResult.sender}} - The email sender
+- recipients: {{EmailQualificationResult.recipients}} - The email recipients  
+- subject: {{EmailQualificationResult.subject}} - The email subject line
+- body: {{EmailQualificationResult.body}} - The full email body text
+- date: {{EmailQualificationResult.date}} - The email timestamp
+- threadId: {{EmailQualificationResult.threadId}} - The email thread identifier
+- gmailOwnerEmail: {{EmailQualificationResult.gmailOwnerEmail}} - YOUR sales rep's email (NOT the lead)
+- hubspotOwnerId: {{EmailQualificationResult.hubspotOwnerId}} - The HubSpot owner ID
 
-Read from scratchpad:
-- The Gmail owner email is {{SDRProcessingResult.gmailOwnerEmail}} - this is the USER, NOT the contact
-- The email sender is {{SDRProcessingResult.sender}}
-- The email recipients is {{SDRProcessingResult.recipients}}
+================================================================================
+SECTION 2: CONTACT EXTRACTION
+================================================================================
 
-LOGIC TO DETERMINE CONTACT:
-- If {{SDRProcessingResult.sender}} equals {{SDRProcessingResult.gmailOwnerEmail}}, then the CONTACT is {{SDRProcessingResult.recipients}}
-- If {{SDRProcessingResult.recipients}} contains {{SDRProcessingResult.gmailOwnerEmail}}, then the CONTACT is {{SDRProcessingResult.sender}}
-- Parse the contact's email from \"Name <email@domain.com>\" format to get plain email address
-- Extract firstName and lastName from the \"Name\" portion (or from email signature if needed)
-- Determine primaryContactRole: buyer (decision maker), champion (advocate), influencer (evaluator), user (end user), unknown
+CRITICAL UNDERSTANDING:
+The Gmail owner {{EmailQualificationResult.gmailOwnerEmail}} is YOUR sales rep, NOT the lead.
+You must find the EXTERNAL contact (the prospect or customer).
 
-CRITICAL RULES:
-1. The primaryContactEmail must NEVER be {{SDRProcessingResult.gmailOwnerEmail}}. Always use the OTHER party's email.
-2. NEVER change gmailOwnerEmail - it must ALWAYS be: {{SDRProcessingResult.gmailOwnerEmail}}
-3. NEVER change hubspotOwnerId - it must ALWAYS be: {{SDRProcessingResult.hubspotOwnerId}}
-4. If sender is {{SDRProcessingResult.gmailOwnerEmail}}, then primaryContactEmail MUST be from recipients
-5. If recipients contains {{SDRProcessingResult.gmailOwnerEmail}}, then primaryContactEmail MUST be from sender
+STEP 1: Determine who the primary contact is
 
-1b. ALL CONTACTS - If multiple external contacts exist (excluding Gmail owner):
-   - allContactEmails: Comma-separated emails (e.g., email1,email2)
-   - allContactNames: Comma-separated names (e.g., Name1,Name2)
-   - If only one contact, set these to empty string
+If {{EmailQualificationResult.sender}} equals {{EmailQualificationResult.gmailOwnerEmail}}:
+  - This is OUTBOUND (your sales rep sent to prospect)
+  - Extract primary contact FROM recipients field
+  
+If {{EmailQualificationResult.recipients}} contains {{EmailQualificationResult.gmailOwnerEmail}}:
+  - This is INBOUND (prospect sent to your sales rep)
+  - Extract primary contact FROM sender field
 
-2. COMPANY - Identify the company:
-   
-   COMMON PERSONAL EMAIL DOMAINS (DO NOT USE AS COMPANY):
-   - gmail.com, googlemail.com, outlook.com, hotmail.com, live.com
-   - yahoo.com, ymail.com, fastmail.com, fastmail.fm
-   - protonmail.com, proton.me, icloud.com, me.com, mac.com
-   - aol.com, mail.com, email.com
-   
-   STRATEGY (in order):
-   a) Check email signature for company name (high confidence)
-   b) Look for explicit company mentions in body (medium confidence)
-   c) Extract from business email domain (high confidence)
-      - SKIP if domain is in personal email list
-      - Example: alice@acme.com → domain: acme.com, name: Acme
-   
-   If NO company found:
-   - Set companyConfidence: \"none\"
-   - Set companyName and companyDomain to empty string
+VALIDATION: primaryContactEmail must NEVER equal gmailOwnerEmail
 
-3. CONTEXT - Preserve email metadata EXACTLY as provided
+STEP 2: Parse email and name from the primary contact
 
-STEP 3: RETURN LeadInfo
-Return agenticsdr.core/LeadInfo with these exact field names and values.
+Common email formats:
+  - John Doe with email john@company.com extracts to email john@company.com and name John Doe
+  - Just john@company.com means check signature for name
+  
+Extract firstName and lastName:
+  - John Doe extracts to firstName John and lastName Doe
+  - Just John extracts to firstName John and lastName empty
+  - If no name in header look in email signature for Best regards John Doe or Thanks John
 
-CRITICAL - DO NOT MODIFY THESE FIELDS:
-- emailSubject: MUST be exactly {{SDRProcessingResult.subject}}
-- emailBody: MUST be exactly {{SDRProcessingResult.body}}
-- emailDate: MUST be exactly {{SDRProcessingResult.date}}
-- emailThreadId: MUST be exactly {{SDRProcessingResult.threadId}}
-- emailSender: MUST be exactly {{SDRProcessingResult.sender}}
-- emailRecipients: MUST be exactly {{SDRProcessingResult.recipients}}
-- gmailOwnerEmail: MUST be exactly {{SDRProcessingResult.gmailOwnerEmail}}
-- hubspotOwnerId: MUST be exactly {{SDRProcessingResult.hubspotOwnerId}}
+STEP 3: Determine primary contact role
 
-DO NOT make up values. DO NOT change values. COPY EXACTLY.
+Analyze email content and titles to assign role:
+
+buyer - Has decision-making and budget authority
+  Look for: CEO, CTO, CFO, VP, Director, "I will approve", budget owner
+  
+champion - Internal advocate who promotes your solution
+  Look for: let me introduce you, I love this, enthusiastic tone
+  
+influencer - Evaluates and recommends but doesn't decide
+  Look for: Manager, Lead, I will recommend, evaluating options
+  
+user - Will use product but doesn't make buying decision
+  Look for: Engineer, Analyst, Developer, technical questions
+  
+"unknown" - Not enough information to determine role
+
+STEP 4: Extract additional contacts
+
+Look for other external contacts (NOT Gmail owner) in:
+  - CC'd people in recipients
+  - Mentions like "I have included Jane from our team"
+
+If additional contacts found:
+  - allContactEmails: jane at company dot com comma bob at company dot com (comma-separated)
+  - allContactNames: Jane Smith comma Bob Johnson (comma-separated, same order)
+
+If ONLY one contact:
+  - allContactEmails: empty string
+  - allContactNames: empty string
+
+================================================================================
+SECTION 3: COMPANY EXTRACTION
+================================================================================
+
+PERSONAL EMAIL DOMAINS - Do NOT use these as companies:
+gmail.com, googlemail.com, outlook.com, outlook.live.com, hotmail.com, live.com, msn.com, yahoo.com, yahoo.co.uk, ymail.com, rocketmail.com, fastmail.com, fastmail.fm, hey.com, protonmail.com, proton.me, pm.me, icloud.com, me.com, mac.com, aol.com, mail.com, email.com, gmx.com, zoho.com
+
+Try these strategies IN ORDER until you find company information:
+
+STRATEGY 1: Email Signature with confidence high
+Look at the bottom of {{EmailQualificationResult.body}} for email signature.
+Patterns to find:
+  - John Doe Senior Engineer Acme Corp
+  - John Doe VP of Sales at Acme Corp
+  - Company name on its own line near title
+
+If found in signature:
+  - companyName: Extract the company name like Acme Corp
+  - companyDomain: Try to extract from signature or use primary contact email domain
+  - companyConfidence: high
+
+STRATEGY 2: Business Email Domain with confidence high
+Extract domain from primaryContactEmail.
+Example: john@acmecorp.com has domain acmecorp.com
+
+Check if domain is NOT in personal email list above.
+If it is a business domain:
+  - companyDomain: Use the extracted domain like acmecorp.com
+  - companyName: Convert domain to name like acmecorp.com becomes Acme Corp
+  - companyConfidence: high
+
+STRATEGY 3: Mentioned in Email Body with confidence medium
+Look for company mentions in {{EmailQualificationResult.body}}:
+  - I work at Acme Corp
+  - We are from Acme Corp
+  - Here at Acme Corp
+  - Acme Corp is interested in
+
+If found:
+  - companyName: Extract the mentioned company name
+  - companyDomain: Try to infer or leave empty if unclear
+  - companyConfidence: medium
+
+STRATEGY 4: No Company Found with confidence none
+If primary contact uses personal email like gmail or outlook AND no company found:
+  - companyName: empty string
+  - companyDomain: empty string
+  - companyConfidence: none
+
+================================================================================
+SECTION 4: OUTPUT CONSTRUCTION
+================================================================================
+
+You MUST return agenticsdr.core/LeadIntelligence with ALL fields.
+
+CRITICAL: These fields must be copied EXACTLY from input - DO NOT modify:
+- emailSubject from {{EmailQualificationResult.subject}}
+- emailBody from {{EmailQualificationResult.body}}
+- emailDate from {{EmailQualificationResult.date}}
+- emailThreadId from {{EmailQualificationResult.threadId}}
+- emailSender from {{EmailQualificationResult.sender}}
+- emailRecipients from {{EmailQualificationResult.recipients}}
+- gmailOwnerEmail from {{EmailQualificationResult.gmailOwnerEmail}}
+- hubspotOwnerId from {{EmailQualificationResult.hubspotOwnerId}}
+
+OUTPUT STRUCTURE:
 
 {
-  \"primaryContactEmail\": \"actual-email-here\",
-  \"primaryContactFirstName\": \"FirstName\",
-  \"primaryContactLastName\": \"LastName\",
+  \"primaryContactEmail\": \"john.doe@acmecorp.com\",
+  \"primaryContactFirstName\": \"John\",
+  \"primaryContactLastName\": \"Doe\",
   \"primaryContactRole\": \"buyer\",
-  \"allContactEmails\": \"email1,email2\" (comma-separated if multiple, empty string if only one),
-  \"allContactNames\": \"Name1,Name2\" (comma-separated if multiple, empty string if only one),
-  \"companyName\": \"Company Name\" (empty string if none),
-  \"companyDomain\": \"domain.com\" (empty string if none),
-  \"companyConfidence\": \"high\" (or \"none\" for personal emails),
-  \"emailSubject\": {{SDRProcessingResult.subject}},
-  \"emailBody\": {{SDRProcessingResult.body}},
-  \"emailDate\": {{SDRProcessingResult.date}},
-  \"emailThreadId\": {{SDRProcessingResult.threadId}},
-  \"emailSender\": {{SDRProcessingResult.sender}},
-  \"emailRecipients\": {{SDRProcessingResult.recipients}},
-  \"gmailOwnerEmail\": {{SDRProcessingResult.gmailOwnerEmail}},
-  \"hubspotOwnerId\": {{SDRProcessingResult.hubspotOwnerId}}
+  \"allContactEmails\": \"jane@acmecorp.com,bob@acmecorp.com\" OR \"\" if only one contact,
+  \"allContactNames\": \"Jane Smith,Bob Johnson\" OR \"\" if only one contact,
+  \"companyName\": \"Acme Corp\" OR \"\" if none found,
+  \"companyDomain\": \"acmecorp.com\" OR \"\" if none found,
+  \"companyConfidence\": \"high\" OR \"medium\" OR \"low\" OR \"none\",
+  \"emailSubject\": \"{{EmailQualificationResult.subject}}\",
+  \"emailBody\": \"{{EmailQualificationResult.body}}\",
+  \"emailDate\": \"{{EmailQualificationResult.date}}\",
+  \"emailThreadId\": \"{{EmailQualificationResult.threadId}}\",
+  \"emailSender\": \"{{EmailQualificationResult.sender}}\",
+  \"emailRecipients\": \"{{EmailQualificationResult.recipients}}\",
+  \"gmailOwnerEmail\": \"{{EmailQualificationResult.gmailOwnerEmail}}\",
+  \"hubspotOwnerId\": \"{{EmailQualificationResult.hubspotOwnerId}}\"
 }
 
-CRITICAL RULES:
-- Access data using scratchpad variables: {{SDRProcessingResult.fieldName}}
-- ALL fields must be plain strings (NO nested objects, NO arrays)
-- For personal emails (gmail, fastmail, outlook), set companyConfidence to \"none\" and companyName/companyDomain to empty string
-- Use actual data from scratchpad - never use placeholder values
+EXAMPLE OUTPUT:
+{
+  \"primaryContactEmail\": \"john.doe@acmecorp.com\",
+  \"primaryContactFirstName\": \"John\",
+  \"primaryContactLastName\": \"Doe\",
+  \"primaryContactRole\": \"buyer\",
+  \"allContactEmails\": \"\",
+  \"allContactNames\": \"\",
+  \"companyName\": \"Acme Corp\",
+  \"companyDomain\": \"acmecorp.com\",
+  \"companyConfidence\": \"high\",
+  \"emailSubject\": \"Enterprise Plan Pricing\",
+  \"emailBody\": \"Hi, I'm interested in your Enterprise plan for 100 users...\",
+  \"emailDate\": \"2026-01-23T10:30:00Z\",
+  \"emailThreadId\": \"thread_abc123\",
+  \"emailSender\": \"John Doe <john.doe@acmecorp.com>\",
+  \"emailRecipients\": \"sales@mycompany.com\",
+  \"gmailOwnerEmail\": \"sales@mycompany.com\",
+  \"hubspotOwnerId\": \"12345\"
+}
 
-OUTPUT FORMAT:
-- NEVER wrap response in markdown code blocks or backticks
-- Do NOT add extra fields beyond the specified",
+================================================================================
+SECTION 5: VALIDATION CHECKLIST
+================================================================================
+
+Before returning, verify ALL of these:
+
+1. primaryContactEmail is NOT the same as gmailOwnerEmail
+2. primaryContactEmail is a valid external email address
+3. primaryContactFirstName and primaryContactLastName are actual names (not "FirstName", "LastName", etc.)
+4. primaryContactRole is one of: buyer, champion, influencer, user, unknown
+5. allContactEmails is comma-separated list OR empty string
+6. allContactNames matches allContactEmails (same count, same order)
+7. companyDomain does NOT contain personal domains (gmail.com, outlook.com, etc.)
+8. companyConfidence is one of: high, medium, low, none
+9. All email* fields copied EXACTLY from input (not modified, not truncated)
+10. gmailOwnerEmail copied EXACTLY from input
+11. hubspotOwnerId copied EXACTLY from input
+12. No markdown formatting, no backticks, no code blocks
+13. Clean JSON only
+
+================================================================================
+CRITICAL RULES
+================================================================================
+
+1. NEVER use placeholder values like placeholder values
+2. ALWAYS extract real data from the email
+3. NEVER wrap response in markdown code blocks or backticks
+4. NEVER modify or truncate the email metadata fields
+5. ALWAYS copy emailSubject, emailBody, emailDate, emailThreadId, emailSender, emailRecipients, gmailOwnerEmail, hubspotOwnerId EXACTLY
+6. If contact uses personal email (gmail, outlook, etc.) AND no company found: companyConfidence = none and companyName empty and companyDomain empty
+7. ALWAYS return clean JSON matching LeadIntelligence schema
+8. NEVER add commentary outside the JSON structure",
     retry classifyRetry,
-    responseSchema agenticsdr.core/LeadInfo
+    responseSchema agenticsdr.core/LeadIntelligence
 }
 
-record CombinedContext {
+record EnrichedLeadContext {
     existingCompanyId String @optional,
     existingCompanyName String @optional,
     existingContactId String @optional,
@@ -258,24 +562,24 @@ record CombinedContext {
     threadStateEmailCount Int @default(0)
 }
 
-event fetchCombinedContext {
+event LeadContextRequested {
     companyDomain String @optional,
     contactEmail String @optional,
     threadId String
 }
 
-workflow fetchCombinedContext {
-    {hubspot/fetchCRMContext {
-        companyDomain fetchCombinedContext.companyDomain,
-        contactEmail fetchCombinedContext.contactEmail
+workflow enrichLeadContext {
+    {hubspot/CRMDataRequested {
+        companyDomain LeadContextRequested.companyDomain,
+        contactEmail LeadContextRequested.contactEmail
     }} @as crmContext;
 
-    {ThreadState {threadId? fetchCombinedContext.threadId}} @as threadStates;
+    {ConversationThread {threadId? LeadContextRequested.threadId}} @as threadStates;
 
     if (threadStates.length > 0) {
         threadStates @as [ts];
 
-        {CombinedContext {
+        {EnrichedLeadContext {
             existingCompanyId crmContext.existingCompanyId,
             existingCompanyName crmContext.existingCompanyName,
             existingContactId crmContext.existingContactId,
@@ -286,7 +590,7 @@ workflow fetchCombinedContext {
             threadStateEmailCount ts.emailCount
         }}
     } else {
-        {CombinedContext {
+        {EnrichedLeadContext {
             existingCompanyId crmContext.existingCompanyId,
             existingCompanyName crmContext.existingCompanyName,
             existingContactId crmContext.existingContactId,
@@ -299,7 +603,7 @@ workflow fetchCombinedContext {
     }
 }
 
-record LeadAnalysisData {
+record LeadClassificationReport {
     leadStage String @enum("NEW", "ENGAGED", "QUALIFIED", "DISQUALIFIED"),
     leadScore Int,
     dealStage String @enum("DISCOVERY", "MEETING", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST", "NONE") @default("NONE"),
@@ -311,77 +615,111 @@ record LeadAnalysisData {
     confidence String @enum("high", "medium", "low")
 }
 
-agent AnalyseLead {
+agent LeadStageClassifier {
     llm "sonnet_llm",
     role "You analyze lead information and existing CRM context to determine lead stage, deal stage, and next actions.",
     instruction "Analyze the lead based on the extracted email information and existing HubSpot context.
 
 INPUT DATA:
 
-EXTRACTED FROM EMAIL:
-- Contacts: {{LeadInfo.contacts}}
-- Primary Contact: {{LeadInfo.primaryContactEmail}}
-- Company Name: {{LeadInfo.company.name}}
-- Company Domain: {{LeadInfo.company.domain}}
-- Company Confidence: {{LeadInfo.company.confidence}}
-- Email Subject: {{LeadInfo.emailSubject}}
-- Email Body: {{LeadInfo.emailBody}}
+EXTRACTED FROM EMAIL (LeadIntelligence):
+- Primary Contact Email: {{LeadIntelligence.primaryContactEmail}}
+- Primary Contact Name: {{LeadIntelligence.primaryContactFirstName}} {{LeadIntelligence.primaryContactLastName}}
+- Primary Contact Role: {{LeadIntelligence.primaryContactRole}}
+- All Contact Emails: {{LeadIntelligence.allContactEmails}}
+- All Contact Names: {{LeadIntelligence.allContactNames}}
+- Company Name: {{LeadIntelligence.companyName}}
+- Company Domain: {{LeadIntelligence.companyDomain}}
+- Company Confidence: {{LeadIntelligence.companyConfidence}}
+- Email Subject: {{LeadIntelligence.emailSubject}}
+- Email Body: {{LeadIntelligence.emailBody}}
+- Email Date: {{LeadIntelligence.emailDate}}
+- Thread ID: {{LeadIntelligence.emailThreadId}}
 
-EXISTING CONTEXT:
-- Has Existing Company: {{CombinedContext.hasCompany}}
-- Existing Company ID: {{CombinedContext.existingCompanyId}}
-- Has Existing Contact: {{CombinedContext.hasContact}}
-- Thread State Exists: {{CombinedContext.threadStateExists}}
-- Previous Lead Stage: {{CombinedContext.threadStateLeadStage}}
-- Email Count: {{CombinedContext.threadStateEmailCount}}
+EXISTING CRM CONTEXT (EnrichedLeadContext):
+- Has Existing Company in CRM: {{EnrichedLeadContext.hasCompany}}
+- Existing Company ID: {{EnrichedLeadContext.existingCompanyId}}
+- Existing Company Name: {{EnrichedLeadContext.existingCompanyName}}
+- Has Existing Contact in CRM: {{EnrichedLeadContext.hasContact}}
+- Existing Contact ID: {{EnrichedLeadContext.existingContactId}}
+- Conversation Thread Exists: {{EnrichedLeadContext.threadStateExists}}
+- Previous Lead Stage: {{EnrichedLeadContext.threadStateLeadStage}}
+- Email Count in Thread: {{EnrichedLeadContext.threadStateEmailCount}}
 
 ANALYSIS TASKS:
 
 1. LEAD STAGE ASSESSMENT:
 
-Score (0-100):
-+40: Explicit buying intent (purchase, buy, pricing, contract)
-+30: Meeting request or scheduled call
-+20: Product/feature questions
-+20: Multiple stakeholders
-+15: Response to outreach
-+10: Technical questions
-+10: Timeline mentioned
--20: Just acknowledgment
--30: Unsubscribe/not interested
--50: Spam
+Calculate Lead Score (0-100) based on email content:
++40: Explicit buying intent (purchase, buy, pricing, contract, proposal)
++30: Meeting request or scheduled call (let's meet, schedule, demo request)
++25: Budget/timeline discussion (this quarter, next month, allocated budget)
++20: Product/feature questions showing use case understanding
++20: Multiple stakeholders involved (CC'd decision makers, mentions team)
++15: Response to outreach (replying to your email, following up)
++15: Specific technical/integration questions
++10: General questions about capabilities
++5: Positive engagement signals (interested, sounds good, let's explore)
+-20: Just acknowledgment without substance (thanks, got it, ok)
+-30: Unsubscribe/not interested/stop contact requests
+-50: Spam, automated, or irrelevant content
 
-Stage:
-- NEW (0-20): Initial contact
-- ENGAGED (21-50): Active conversation
-- QUALIFIED (51-100): Strong buying signals
-- DISQUALIFIED (<0): Not interested
+Determine Lead Stage based on score AND previous stage:
+- NEW (0-20): Initial contact, exploratory stage
+- ENGAGED (21-50): Active conversation, showing interest
+- QUALIFIED (51-100): Strong buying signals, clear opportunity
+- DISQUALIFIED (<0): Not interested or invalid
 
-Consider PREVIOUS lead stage - progress forward unless clear regression.
+IMPORTANT: Consider previous stage ({{EnrichedLeadContext.threadStateLeadStage}}) and email count ({{EnrichedLeadContext.threadStateEmailCount}}):
+- If threadStateExists is true, review progression from previous stage
+- Can move forward or backward based on latest email
+- Multiple emails (count > 1) in ENGAGED stage may indicate qualification
+- Don't automatically qualify just because of email count - require genuine buying signals
 
 2. DEAL STAGE ASSESSMENT:
 
-- DISCOVERY: \"Tell me about\", \"How does\", feature questions
-- MEETING: \"Schedule\", \"Demo\", confirmed calls
-- PROPOSAL: \"Pricing\", \"Quote\", \"Contract\"
-- NEGOTIATION: \"Legal review\", \"Discount\", approvals
-- CLOSED_WON: \"Signed\", \"Purchase order\"
-- CLOSED_LOST: \"Going with competitor\"
-- NONE: No deal signals
+Analyze email content to determine deal progression:
+- DISCOVERY: \"Tell me about\", \"How does\", \"Can you explain\", feature questions, early exploration
+- MEETING: \"Schedule\", \"Demo\", \"Let's meet\", \"Calendar invite\", confirmed calls
+- PROPOSAL: \"Pricing\", \"Quote\", \"Send proposal\", \"Contract\", \"What does it cost\"
+- NEGOTIATION: \"Legal review\", \"Discount\", \"Terms\", approval processes, stakeholder buy-in
+- CLOSED_WON: \"Signed\", \"Purchase order\", \"Let's proceed\", \"Approved\"
+- CLOSED_LOST: \"Going with competitor\", \"Not moving forward\", \"Decided against\"
+- NONE: No clear deal signals, early stage, or just informational
 
-shouldCreateDeal = true IF:
-- Lead stage is QUALIFIED
-- Deal stage >= DISCOVERY
-- No existing deal
+3. CREATE FLAGS - Determine what CRM records to create:
 
-3. NEXT ACTION:
-Recommend specific follow-up action.
+shouldCreateDeal: Set to true ONLY if ALL conditions met:
+- Lead stage is QUALIFIED (score >= 51)
+- Deal stage is DISCOVERY or higher (not NONE, not CLOSED_LOST)
+- No existing deal in thread (check if threadStateExists and has dealId)
+- Clear opportunity signals present
 
-4. CREATE FLAGS:
-- shouldCreateContact: true if no existing contact
-- shouldCreateCompany: true if no existing company AND company.confidence is high or medium
+shouldCreateContact: Set to true if:
+- No existing contact ({{EnrichedLeadContext.hasContact}} is false)
+- OR contact email doesn't match existing contactId
+- Valid contact information extracted from email
 
-RETURN FORMAT:
+shouldCreateCompany: Set to true if:
+- No existing company ({{EnrichedLeadContext.hasCompany}} is false)
+- AND companyConfidence is \"high\" or \"medium\" (NOT \"low\" or \"none\")
+- Valid company domain extracted (not personal email domain)
+
+4. NEXT ACTION:
+Provide specific, actionable follow-up recommendation based on:
+- Current lead stage and deal stage
+- Email content and context
+- Previous interaction history (if email count > 1)
+Examples: \"Send pricing deck for Enterprise plan\", \"Schedule product demo\", \"Follow up on technical questions\", \"Send case studies for [industry]\"
+
+5. REASONING:
+Explain your analysis clearly:
+- Key signals that influenced scoring
+- Why you chose the lead stage
+- Justification for deal stage
+- Why create flags are set to true/false
+
+RETURN FORMAT - Return agenticsdr.core/LeadClassificationReport:
 {
   \"leadStage\": \"QUALIFIED\",
   \"leadScore\": 75,
@@ -389,24 +727,30 @@ RETURN FORMAT:
   \"shouldCreateDeal\": true,
   \"shouldCreateContact\": true,
   \"shouldCreateCompany\": true,
-  \"reasoning\": \"Customer asked for pricing with timeline.\",
-  \"nextAction\": \"Send pricing proposal and schedule demo\",
+  \"reasoning\": \"Customer asked for pricing with specific timeline for Q2 implementation. Multiple stakeholders CC'd including VP of Engineering. Score: 75 (40 for pricing intent + 25 for timeline + 10 for tech questions). Previous stage was ENGAGED with 3 emails in thread, now progressing to QUALIFIED based on clear buying signals.\",
+  \"nextAction\": \"Send detailed pricing proposal for Enterprise plan with Q2 implementation timeline and technical integration guide\",
   \"confidence\": \"high\"
 }
 
-RULES:
-- Be conservative with scoring
-- Consider conversation history
-- Return ONLY the LeadAnalysisData structure
+CRITICAL RULES:
+- Be conservative with scoring - require clear evidence for high scores
+- Consider conversation history (threadStateEmailCount and previous leadStage)
+- Don't create deals prematurely - need genuine QUALIFIED signals
+- Check existing CRM data carefully before setting create flags
+- Reasoning should reference specific email content and scoring rationale
+- nextAction should be specific and actionable, not generic
+- Return ONLY the LeadClassificationReport structure - no additional text
 
-CRITICAL OUTPUT FORMAT RULES:
-- NEVER wrap response in markdown code blocks
-- NEVER use markdown formatting",
+OUTPUT FORMAT:
+- NEVER wrap response in markdown code blocks or backticks
+- NEVER add JSON formatting with backticks or language identifiers
+- DO NOT use markdown formatting
+- Return clean JSON matching LeadClassificationReport schema exactly",
     retry classifyRetry,
-    responseSchema agenticsdr.core/LeadAnalysisData
+    responseSchema agenticsdr.core/LeadClassificationReport
 }
 
-event updateThreadState {
+event ConversationStateChanged {
     threadId String,
     contactEmail String,
     companyId String @optional,
@@ -419,26 +763,26 @@ event updateThreadState {
     meetingId String @optional
 }
 
-workflow updateThreadState {
+workflow trackConversationState {
     
-    {ThreadState {threadId? updateThreadState.threadId}} @as existingStates;
+    {ConversationThread {threadId? ConversationStateChanged.threadId}} @as existingStates;
     
     
     if (existingStates.length > 0) {
         existingStates @as [existingState];
         
         
-        {ThreadState {
-            threadId? updateThreadState.threadId,
-            contactIds [updateThreadState.contactEmail],
-            companyId updateThreadState.companyId,
-            companyName updateThreadState.companyName,
-            leadStage updateThreadState.leadStage,
-            dealId updateThreadState.dealId,
-            dealStage updateThreadState.dealStage,
-            latestNoteId updateThreadState.noteId,
-            latestTaskId updateThreadState.taskId,
-            latestMeetingId updateThreadState.meetingId,
+        {ConversationThread {
+            threadId? ConversationStateChanged.threadId,
+            contactIds [ConversationStateChanged.contactEmail],
+            companyId ConversationStateChanged.companyId,
+            companyName ConversationStateChanged.companyName,
+            leadStage ConversationStateChanged.leadStage,
+            dealId ConversationStateChanged.dealId,
+            dealStage ConversationStateChanged.dealStage,
+            latestNoteId ConversationStateChanged.noteId,
+            latestTaskId ConversationStateChanged.taskId,
+            latestMeetingId ConversationStateChanged.meetingId,
             emailCount existingState.emailCount + 1,
             lastActivity now(),
             updatedAt now()
@@ -447,17 +791,17 @@ workflow updateThreadState {
         result
     } else {
         
-        {ThreadState {
-            threadId updateThreadState.threadId,
-            contactIds [updateThreadState.contactEmail],
-            companyId updateThreadState.companyId,
-            companyName updateThreadState.companyName,
-            leadStage updateThreadState.leadStage,
-            dealId updateThreadState.dealId,
-            dealStage updateThreadState.dealStage,
-            latestNoteId updateThreadState.noteId,
-            latestTaskId updateThreadState.taskId,
-            latestMeetingId updateThreadState.meetingId,
+        {ConversationThread {
+            threadId ConversationStateChanged.threadId,
+            contactIds [ConversationStateChanged.contactEmail],
+            companyId ConversationStateChanged.companyId,
+            companyName ConversationStateChanged.companyName,
+            leadStage ConversationStateChanged.leadStage,
+            dealId ConversationStateChanged.dealId,
+            dealStage ConversationStateChanged.dealStage,
+            latestNoteId ConversationStateChanged.noteId,
+            latestTaskId ConversationStateChanged.taskId,
+            latestMeetingId ConversationStateChanged.meetingId,
             emailCount 1,
             lastActivity now()
         }} @as result;
@@ -466,14 +810,14 @@ workflow updateThreadState {
     }
 }
 
-workflow skipProcessing {
-    {SkipResult {
+workflow bypassLeadProcessing {
+    {QualificationRejection {
         skipped true,
         reason "Email does not need SDR processing"
     }}
 }
 
-decision needsSDRProcessing {
+decision shouldProcessLead {
     case (needsProcessing == true) {
         ProcessEmail
     }
@@ -482,7 +826,7 @@ decision needsSDRProcessing {
     }
 }
 
-record CRMUpdateRequest {
+record CRMSyncPayload {
     shouldCreateCompany Boolean,
     shouldCreateContact Boolean,
     shouldCreateDeal Boolean,
@@ -502,7 +846,7 @@ record CRMUpdateRequest {
     existingContactId String
 }
 
-event prepareCRMUpdateRequest {
+event CRMSyncInitiated {
     shouldCreateCompany Boolean,
     shouldCreateContact Boolean,
     shouldCreateDeal Boolean,
@@ -521,115 +865,176 @@ event prepareCRMUpdateRequest {
     existingContactId String @optional
 }
 
-workflow prepareCRMUpdateRequest {
-    "contactEmail from LeadInfo: " + LeadInfo.primaryContactEmail @as primaryEmail;
-    "contactEmail from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.contactEmail @as conEmail;
-    "ownerId from prepareCRMUpdateRequest: " + prepareCRMUpdateRequest.ownerId @as ownId;
+workflow prepareCRMSync {
+    "contactEmail from LeadIntelligence: " + LeadIntelligence.primaryContactEmail @as primaryEmail;
+    "contactEmail from CRMSyncInitiated: " + CRMSyncInitiated.contactEmail @as conEmail;
+    "ownerId from CRMSyncInitiated: " + CRMSyncInitiated.ownerId @as ownId;
 
-    {CRMUpdateRequest {
-        shouldCreateCompany prepareCRMUpdateRequest.shouldCreateCompany,
-        shouldCreateContact prepareCRMUpdateRequest.shouldCreateContact,
-        shouldCreateDeal prepareCRMUpdateRequest.shouldCreateDeal,
-        companyName prepareCRMUpdateRequest.companyName,
-        companyDomain prepareCRMUpdateRequest.companyDomain,
-        contactEmail prepareCRMUpdateRequest.contactEmail,
-        contactFirstName prepareCRMUpdateRequest.contactFirstName,
-        contactLastName prepareCRMUpdateRequest.contactLastName,
-        leadStage prepareCRMUpdateRequest.leadStage,
-        leadScore prepareCRMUpdateRequest.leadScore,
-        dealStage prepareCRMUpdateRequest.dealStage,
-        dealName prepareCRMUpdateRequest.leadStage + " - " + prepareCRMUpdateRequest.dealStage,
-        reasoning prepareCRMUpdateRequest.reasoning,
-        nextAction prepareCRMUpdateRequest.nextAction,
-        ownerId prepareCRMUpdateRequest.ownerId,
-        existingCompanyId prepareCRMUpdateRequest.existingCompanyId,
-        existingContactId prepareCRMUpdateRequest.existingContactId
+    {CRMSyncPayload {
+        shouldCreateCompany CRMSyncInitiated.shouldCreateCompany,
+        shouldCreateContact CRMSyncInitiated.shouldCreateContact,
+        shouldCreateDeal CRMSyncInitiated.shouldCreateDeal,
+        companyName CRMSyncInitiated.companyName,
+        companyDomain CRMSyncInitiated.companyDomain,
+        contactEmail CRMSyncInitiated.contactEmail,
+        contactFirstName CRMSyncInitiated.contactFirstName,
+        contactLastName CRMSyncInitiated.contactLastName,
+        leadStage CRMSyncInitiated.leadStage,
+        leadScore CRMSyncInitiated.leadScore,
+        dealStage CRMSyncInitiated.dealStage,
+        dealName CRMSyncInitiated.leadStage + " - " + CRMSyncInitiated.dealStage,
+        reasoning CRMSyncInitiated.reasoning,
+        nextAction CRMSyncInitiated.nextAction,
+        ownerId CRMSyncInitiated.ownerId,
+        existingCompanyId CRMSyncInitiated.existingCompanyId,
+        existingContactId CRMSyncInitiated.existingContactId
     }} @as request;
     
     
     request
 }
 
-flow sdrManager {
-    verifySDRProcessing --> needsSDRProcessing
-    needsSDRProcessing --> "SkipEmail" skipProcessing
-    needsSDRProcessing --> "ProcessEmail" ExtractLeadInfo
-    ExtractLeadInfo --> {fetchCombinedContext {
-        companyDomain ExtractLeadInfo.companyDomain,
-        contactEmail ExtractLeadInfo.primaryContactEmail,
-        threadId ExtractLeadInfo.emailThreadId
+flow LeadPipelineOrchestrator {
+    EmailQualificationAgent --> shouldProcessLead
+    shouldProcessLead --> "SkipEmail" bypassLeadProcessing
+    shouldProcessLead --> "ProcessEmail" LeadIntelligenceExtractor
+    LeadIntelligenceExtractor --> {LeadContextRequested {
+        companyDomain LeadIntelligenceExtractor.companyDomain,
+        contactEmail LeadIntelligenceExtractor.primaryContactEmail,
+        threadId LeadIntelligenceExtractor.emailThreadId
     }}
-    fetchCombinedContext --> AnalyseLead
-    AnalyseLead --> {prepareCRMUpdateRequest {
-        shouldCreateCompany AnalyseLead.shouldCreateCompany,
-        shouldCreateContact AnalyseLead.shouldCreateContact,
-        shouldCreateDeal AnalyseLead.shouldCreateDeal,
-        companyName ExtractLeadInfo.companyName,
-        companyDomain ExtractLeadInfo.companyDomain,
-        contactEmail ExtractLeadInfo.primaryContactEmail,
-        contactFirstName ExtractLeadInfo.primaryContactFirstName,
-        contactLastName ExtractLeadInfo.primaryContactLastName,
-        leadStage AnalyseLead.leadStage,
-        leadScore AnalyseLead.leadScore,
-        dealStage AnalyseLead.dealStage,
-        reasoning AnalyseLead.reasoning,
-        nextAction AnalyseLead.nextAction,
-        ownerId verifySDRProcessing.hubspotOwnerId,
-        existingCompanyId CombinedContext.existingCompanyId,
-        existingContactId CombinedContext.existingContactId
+    enrichLeadContext --> LeadStageClassifier
+    LeadStageClassifier --> {CRMSyncInitiated {
+        shouldCreateCompany LeadStageClassifier.shouldCreateCompany,
+        shouldCreateContact LeadStageClassifier.shouldCreateContact,
+        shouldCreateDeal LeadStageClassifier.shouldCreateDeal,
+        companyName LeadIntelligenceExtractor.companyName,
+        companyDomain LeadIntelligenceExtractor.companyDomain,
+        contactEmail LeadIntelligenceExtractor.primaryContactEmail,
+        contactFirstName LeadIntelligenceExtractor.primaryContactFirstName,
+        contactLastName LeadIntelligenceExtractor.primaryContactLastName,
+        leadStage LeadStageClassifier.leadStage,
+        leadScore LeadStageClassifier.leadScore,
+        dealStage LeadStageClassifier.dealStage,
+        reasoning LeadStageClassifier.reasoning,
+        nextAction LeadStageClassifier.nextAction,
+        ownerId EmailQualificationAgent.hubspotOwnerId,
+        existingCompanyId EnrichedLeadContext.existingCompanyId,
+        existingContactId EnrichedLeadContext.existingContactId
     }}
-    prepareCRMUpdateRequest --> {hubspot/updateCRMFromLead {
-        shouldCreateCompany CRMUpdateRequest.shouldCreateCompany,
-        shouldCreateContact CRMUpdateRequest.shouldCreateContact,
-        shouldCreateDeal CRMUpdateRequest.shouldCreateDeal,
-        companyName CRMUpdateRequest.companyName,
-        companyDomain CRMUpdateRequest.companyDomain,
-        contactEmail CRMUpdateRequest.contactEmail,
-        contactFirstName CRMUpdateRequest.contactFirstName,
-        contactLastName CRMUpdateRequest.contactLastName,
-        leadStage CRMUpdateRequest.leadStage,
-        leadScore CRMUpdateRequest.leadScore,
-        dealStage CRMUpdateRequest.dealStage,
-        dealName CRMUpdateRequest.dealName,
-        reasoning CRMUpdateRequest.reasoning,
-        nextAction CRMUpdateRequest.nextAction,
-        ownerId CRMUpdateRequest.ownerId,
-        existingCompanyId CRMUpdateRequest.existingCompanyId,
-        existingContactId CRMUpdateRequest.existingContactId
+    prepareCRMSync --> {hubspot/LeadSyncTriggered {
+        shouldCreateCompany CRMSyncPayload.shouldCreateCompany,
+        shouldCreateContact CRMSyncPayload.shouldCreateContact,
+        shouldCreateDeal CRMSyncPayload.shouldCreateDeal,
+        companyName CRMSyncPayload.companyName,
+        companyDomain CRMSyncPayload.companyDomain,
+        contactEmail CRMSyncPayload.contactEmail,
+        contactFirstName CRMSyncPayload.contactFirstName,
+        contactLastName CRMSyncPayload.contactLastName,
+        leadStage CRMSyncPayload.leadStage,
+        leadScore CRMSyncPayload.leadScore,
+        dealStage CRMSyncPayload.dealStage,
+        dealName CRMSyncPayload.dealName,
+        reasoning CRMSyncPayload.reasoning,
+        nextAction CRMSyncPayload.nextAction,
+        ownerId CRMSyncPayload.ownerId,
+        existingCompanyId CRMSyncPayload.existingCompanyId,
+        existingContactId CRMSyncPayload.existingContactId
     }}
-    hubspot/updateCRMFromLead --> {updateThreadState {
-        threadId ExtractLeadInfo.emailThreadId,
-        contactEmail ExtractLeadInfo.primaryContactEmail,
-        companyId hubspot/CRMUpdateResult.companyId,
-        companyName hubspot/CRMUpdateResult.companyName,
-        leadStage AnalyseLead.leadStage,
-        dealId hubspot/CRMUpdateResult.dealId,
-        dealStage AnalyseLead.dealStage,
-        noteId hubspot/CRMUpdateResult.noteId,
-        taskId hubspot/CRMUpdateResult.taskId,
-        meetingId hubspot/CRMUpdateResult.meetingId
+    hubspot/syncLeadToCRM --> {ConversationStateChanged {
+        threadId LeadIntelligenceExtractor.emailThreadId,
+        contactEmail LeadIntelligenceExtractor.primaryContactEmail,
+        companyId hubspot/CRMSyncResult.companyId,
+        companyName hubspot/CRMSyncResult.companyName,
+        leadStage LeadStageClassifier.leadStage,
+        dealId hubspot/CRMSyncResult.dealId,
+        dealStage LeadStageClassifier.dealStage,
+        noteId hubspot/CRMSyncResult.noteId,
+        taskId hubspot/CRMSyncResult.taskId,
+        meetingId hubspot/CRMSyncResult.meetingId
     }}
 }
 
-@public agent sdrManager {
+@public agent LeadPipelineOrchestrator {
     llm "gpt_llm",
-    role "You are an intelligent SDR agent that manages the complete sales development workflow.",
-    instruction "Process the email through the complete SDR pipeline:
-    
-1. Check if email needs SDR processing
-2. Extract all lead information (contacts, company, context)
-3. Fetch relevant HubSpot data (existing company, contacts, deals, thread state)
-4. Analyze lead and determine stages
-5. Update CRM with generated plan
+    role "You are an intelligent sales pipeline orchestrator that manages the complete lead engagement workflow from email to CRM.",
+    instruction "You orchestrate the end-to-end lead processing pipeline. When an email arrives, execute the LeadPipelineOrchestrator flow systematically.
 
-The email data is provided in the message. Execute the flow systematically."
+PIPELINE OVERVIEW:
+
+The email data is provided in the message as InboundEmailPayload. Execute each stage of the pipeline:
+
+STAGE 1: EMAIL QUALIFICATION (EmailQualificationAgent)
+- Analyze incoming email to determine if it requires sales processing
+- Filter out automated emails, newsletters, spam, internal communications
+- Qualify business opportunities, sales inquiries, meeting requests
+- Output: EmailQualificationResult with needsProcessing flag
+
+STAGE 2: LEAD INTELLIGENCE EXTRACTION (LeadIntelligenceExtractor)
+- Extract contact information (primary contact, additional stakeholders, roles)
+- Identify company information (name, domain, confidence level)
+- Preserve all email metadata for CRM context
+- Output: LeadIntelligence with structured contact and company data
+
+STAGE 3: CRM CONTEXT ENRICHMENT (enrichLeadContext workflow)
+- Query HubSpot CRM for existing company records by domain
+- Query HubSpot CRM for existing contact records by email
+- Retrieve conversation thread history and previous lead stage
+- Combine CRM data with thread state for full context
+- Output: EnrichedLeadContext with existing CRM data and conversation history
+
+STAGE 4: LEAD CLASSIFICATION & SCORING (LeadStageClassifier)
+- Analyze email content to score lead quality (0-100)
+- Determine lead stage: NEW, ENGAGED, QUALIFIED, DISQUALIFIED
+- Identify deal stage: DISCOVERY, MEETING, PROPOSAL, NEGOTIATION, etc.
+- Consider conversation history and previous interactions
+- Decide what CRM records to create (contact, company, deal)
+- Recommend specific next action
+- Output: LeadClassificationReport with stage, score, recommendations
+
+STAGE 5: CRM SYNCHRONIZATION (syncLeadToCRM workflow)
+- Create or update company record in HubSpot (if needed)
+- Create or update contact record in HubSpot (if needed)
+- Create deal record in HubSpot (if qualified opportunity)
+- Create engagement note with analysis and context
+- Create follow-up task with recommended next action
+- Schedule follow-up meeting (if appropriate)
+- Output: CRMSyncResult with created/updated record IDs
+
+STAGE 6: CONVERSATION STATE TRACKING (trackConversationState workflow)
+- Update or create ConversationThread entity
+- Track email count, lead stage progression, deal associations
+- Maintain conversation history for future context
+- Record latest activities (notes, tasks, meetings)
+- Output: Updated ConversationThread record
+
+EXECUTION INSTRUCTIONS:
+
+1. Accept InboundEmailPayload from the message
+2. Execute each stage in order through the flow
+3. Pass outputs from each stage as inputs to the next stage
+4. Ensure all data flows correctly between stages
+5. Handle both qualified and unqualified emails appropriately
+6. For unqualified emails: bypass to QualificationRejection
+7. For qualified emails: process through all stages to CRM sync
+
+KEY PRINCIPLES:
+
+- **Data Integrity**: Preserve all email data exactly through the pipeline
+- **Context Awareness**: Use existing CRM data and conversation history in decisions
+- **Conservative Qualification**: Better to process borderline cases than miss opportunities
+- **Accurate Classification**: Base lead scoring on clear signals from email content
+- **Actionable Outputs**: Generate specific, actionable next steps for sales follow-up
+- **Complete CRM Sync**: Ensure all relevant data reaches HubSpot for sales team visibility
+
+The email data is provided in the message. Execute the LeadPipelineOrchestrator flow systematically through all stages."
 }
 
 workflow @after create:gmail/Email {
-    {SDRConfig? {}} @as [config];
+    {SalesEngagementConfig? {}} @as [config];
     
     
-    {EmailData {
+    {InboundEmailPayload {
         sender gmail/Email.sender,
         recipients gmail/Email.recipients,
         subject gmail/Email.subject,
@@ -640,5 +1045,5 @@ workflow @after create:gmail/Email {
         hubspotOwnerId config.hubspotOwnerId
     }} @as emailData;
 
-    {sdrManager {message emailData}}
+    {LeadPipelineOrchestrator {message emailData}}
 }
