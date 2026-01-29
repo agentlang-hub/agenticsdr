@@ -1,0 +1,326 @@
+{
+  "schemaVersion": "1.0.0",
+  "module": {
+    "name": "agenticsdr.core",
+    "generatedAt": "2025-01-23T10:00:00Z",
+    "lastUpdatedAt": "2026-01-27T09:27:23.614Z"
+  },
+  "entities": {
+    "SalesEngagementConfig": {
+      "purpose": "Stores configuration mapping between Gmail accounts and HubSpot owner IDs to enable automated sales engagement tracking",
+      "attributes": {
+        "id": {
+          "type": "UUID",
+          "description": "Unique identifier for the configuration record",
+          "constraints": [
+            "@id",
+            "@default(uuid())"
+          ]
+        },
+        "gmailOwnerEmail": {
+          "type": "String",
+          "description": "Gmail email address of the sales representative whose emails are being processed",
+          "constraints": []
+        },
+        "hubspotOwnerId": {
+          "type": "String",
+          "description": "HubSpot owner ID that corresponds to the Gmail account for CRM record assignment",
+          "constraints": []
+        }
+      },
+      "relationships": {},
+      "businessRules": [
+        "Each Gmail account must have a corresponding HubSpot owner ID for proper CRM synchronization",
+        "Configuration must exist before processing emails to ensure proper ownership assignment"
+      ]
+    },
+    "ConversationThread": {
+      "purpose": "Tracks the complete lifecycle of email conversations with prospects including engagement history, lead progression, and CRM associations",
+      "attributes": {
+        "threadId": {
+          "type": "String",
+          "description": "Gmail thread identifier that groups related emails together",
+          "constraints": [
+            "@id"
+          ]
+        },
+        "contactIds": {
+          "type": "String[]",
+          "description": "Array of contact email addresses participating in this conversation thread",
+          "constraints": []
+        },
+        "companyId": {
+          "type": "String",
+          "description": "HubSpot company record ID associated with this conversation",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "companyName": {
+          "type": "String",
+          "description": "Name of the company involved in this conversation for quick reference",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "leadStage": {
+          "type": "Enum",
+          "description": "Current qualification stage of the lead tracking progression from initial contact to qualified opportunity",
+          "constraints": [
+            "@enum(NEW, ENGAGED, QUALIFIED, DISQUALIFIED)",
+            "@default(NEW)"
+          ]
+        },
+        "dealId": {
+          "type": "String",
+          "description": "HubSpot deal record ID if an opportunity has been created from this conversation",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "dealStage": {
+          "type": "Enum",
+          "description": "Current sales pipeline stage of the associated deal tracking progress toward close",
+          "constraints": [
+            "@enum(DISCOVERY, MEETING, PROPOSAL, NEGOTIATION, CLOSED_WON, CLOSED_LOST)",
+            "@optional"
+          ]
+        },
+        "latestNoteId": {
+          "type": "String",
+          "description": "Most recent HubSpot engagement note ID created for this conversation",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "latestTaskId": {
+          "type": "String",
+          "description": "Most recent HubSpot task ID created as follow-up action for this conversation",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "latestMeetingId": {
+          "type": "String",
+          "description": "Most recent HubSpot meeting ID scheduled from this conversation",
+          "constraints": [
+            "@optional"
+          ]
+        },
+        "lastActivity": {
+          "type": "DateTime",
+          "description": "Timestamp of the most recent email activity in this thread for prioritization",
+          "constraints": [
+            "@default(now())"
+          ]
+        },
+        "emailCount": {
+          "type": "Int",
+          "description": "Total number of emails exchanged in this conversation thread indicating engagement depth",
+          "constraints": [
+            "@default"
+          ]
+        },
+        "createdAt": {
+          "type": "DateTime",
+          "description": "Timestamp when this conversation thread was first created",
+          "constraints": [
+            "@default(now())"
+          ]
+        },
+        "updatedAt": {
+          "type": "DateTime",
+          "description": "Timestamp of the last update to this conversation record",
+          "constraints": [
+            "@default(now())"
+          ]
+        }
+      },
+      "relationships": {},
+      "businessRules": [
+        "Email count increments with each new email in the thread to track engagement frequency",
+        "Lead stage can progress forward or regress backward based on email content and engagement",
+        "Deal should only be created when lead reaches QUALIFIED stage with clear buying signals",
+        "Thread ID must match Gmail thread identifier for accurate conversation tracking"
+      ]
+    }
+  },
+  "events": {
+    "enrichLeadContext": {
+      "purpose": "Triggered to fetch existing CRM data and conversation history before lead classification to provide context for scoring decisions",
+      "parameters": {
+        "companyDomain": "String",
+        "contactEmail": "String",
+        "threadId": "String"
+      },
+      "public": false,
+      "usedBy": [
+        "enrichLeadContext",
+        "LeadPipelineOrchestrator"
+      ]
+    },
+    "trackConversationState": {
+      "purpose": "Triggered after CRM sync to update or create conversation thread records maintaining engagement history and CRM associations",
+      "parameters": {
+        "threadId": "String",
+        "contactEmail": "String",
+        "companyId": "String",
+        "companyName": "String",
+        "leadStage": "String",
+        "dealId": "String",
+        "dealStage": "String",
+        "noteId": "String",
+        "taskId": "String",
+        "meetingId": "String"
+      },
+      "public": false,
+      "usedBy": [
+        "trackConversationState",
+        "LeadPipelineOrchestrator"
+      ]
+    }
+  },
+  "workflows": {
+    "enrichLeadContext": {
+      "purpose": "Retrieves existing CRM records and conversation history to provide context for lead classification and prevent duplicate record creation",
+      "businessLogic": "Queries HubSpot for existing company and contact records, retrieves conversation thread state, combines all context into enriched payload",
+      "entitiesInvolved": [
+        "ConversationThread"
+      ],
+      "pattern": "context-enrichment",
+      "steps": [
+        "Query HubSpot CRM for existing company by domain",
+        "Query HubSpot CRM for existing contact by email",
+        "Retrieve conversation thread by threadId",
+        "Combine CRM data with thread state including lead stage and email count",
+        "Return EnrichedLeadContext with all existing data"
+      ],
+      "triggerEvent": "enrichLeadContext"
+    },
+    "trackConversationState": {
+      "purpose": "Maintains conversation thread records by updating existing threads or creating new ones tracking lead progression and CRM associations",
+      "businessLogic": "Checks if thread exists, increments email count for existing threads, creates new thread for first contact, updates all CRM associations and timestamps",
+      "entitiesInvolved": [
+        "ConversationThread"
+      ],
+      "pattern": "upsert-with-counter",
+      "steps": [
+        "Query for existing ConversationThread by threadId",
+        "If exists increment emailCount and update all fields",
+        "If new create ConversationThread with emailCount 1",
+        "Update lastActivity and updatedAt timestamps",
+        "Return updated or created ConversationThread"
+      ],
+      "triggerEvent": "trackConversationState"
+    },
+    "bypassLeadProcessing": {
+      "purpose": "Handles emails that do not require sales processing by returning rejection record with skip flag",
+      "businessLogic": "Returns QualificationRejection indicating email was skipped with reason for audit trail",
+      "entitiesInvolved": [],
+      "pattern": "bypass-flow",
+      "steps": [
+        "Create QualificationRejection record",
+        "Set skipped to true",
+        "Set reason explaining why email was not processed"
+      ],
+      "triggerEvent": "shouldProcessLead"
+    },
+    "@after create:gmail/Email": {
+      "purpose": "Automatically triggers lead pipeline processing whenever a new Gmail email is received ensuring no sales opportunities are missed",
+      "businessLogic": "Retrieves sales configuration, constructs InboundEmailPayload with email data and owner information, invokes LeadPipelineOrchestrator agent",
+      "entitiesInvolved": [
+        "SalesEngagementConfig"
+      ],
+      "pattern": "event-triggered-orchestration",
+      "steps": [
+        "Retrieve SalesEngagementConfig to get gmailOwnerEmail and hubspotOwnerId",
+        "Construct InboundEmailPayload with email data and configuration",
+        "Invoke LeadPipelineOrchestrator agent with email payload",
+        "Pipeline processes email through all stages automatically"
+      ],
+      "triggerEvent": "create:gmail/Email"
+    }
+  },
+  "agents": {
+    "EmailQualificationAgent": {
+      "role": "Intelligent email filter that determines if incoming emails require sales engagement processing by analyzing content for business signals while filtering out automated messages, newsletters, and spam",
+      "type": "analyzer",
+      "tools": [],
+      "interactionPattern": "Receives InboundEmailPayload and returns EmailQualificationResult with needsProcessing decision based on multi-stage qualification logic",
+      "businessValue": "Prevents sales team overwhelm by filtering noise and ensuring only genuine business opportunities reach the CRM while maintaining audit trail of all decisions",
+      "isPublic": false
+    },
+    "LeadIntelligenceExtractor": {
+      "role": "Extracts structured contact and company information from qualified sales emails including primary contacts, stakeholders, company details, and relationship context for CRM enrichment",
+      "type": "analyzer",
+      "tools": [],
+      "interactionPattern": "Receives EmailQualificationResult and returns LeadIntelligence with extracted contact details, company information, and confidence scores",
+      "businessValue": "Automates manual data entry by extracting structured lead information from unstructured email content ensuring accurate CRM data and faster sales response",
+      "isPublic": false
+    },
+    "LeadStageClassifier": {
+      "role": "Analyzes lead quality by scoring email content, determining lead and deal stages, and recommending next actions based on buying signals and conversation history",
+      "type": "analyzer",
+      "tools": [],
+      "interactionPattern": "Receives LeadIntelligence and EnrichedLeadContext, returns LeadClassificationReport with scoring, stage assignments, and actionable recommendations",
+      "businessValue": "Provides objective lead scoring and stage classification enabling sales teams to prioritize high-value opportunities and take appropriate next actions based on data-driven insights",
+      "isPublic": false
+    },
+    "LeadPipelineOrchestrator": {
+      "role": "Orchestrates the complete end-to-end lead processing pipeline from email qualification through CRM synchronization coordinating all agents and workflows to ensure seamless data flow",
+      "type": "planner",
+      "tools": [],
+      "interactionPattern": "Receives InboundEmailPayload via message input and executes LeadPipelineOrchestrator flow systematically through all six stages",
+      "businessValue": "Automates the entire sales engagement workflow eliminating manual processing, ensuring consistent lead handling, and providing complete visibility into the sales pipeline",
+      "isPublic": true
+    }
+  },
+  "flows": {
+    "LeadPipelineOrchestrator": {
+      "purpose": "Orchestrates the complete lead engagement workflow from initial email qualification through CRM synchronization and conversation state tracking",
+      "nodes": [
+        "EmailQualificationAgent",
+        "shouldProcessLead",
+        "bypassLeadProcessing",
+        "LeadIntelligenceExtractor",
+        "enrichLeadContext",
+        "LeadStageClassifier",
+        "hubspot/syncLeadToCRM",
+        "trackConversationState"
+      ],
+      "publicAgent": "LeadPipelineOrchestrator",
+      "useCase": "Sales team receives inbound email from prospect, system automatically qualifies the email, extracts contact and company information, enriches with existing CRM context, scores and classifies the lead, syncs all data to HubSpot creating or updating records, and tracks conversation state for future context"
+    }
+  },
+  "designPatterns": [
+    "All entities use String @id for natural keys (threadId) or UUID @id with @default(uuid()) for synthetic keys",
+    "Enum constraints define valid values for categorical fields like leadStage and dealStage ensuring data integrity",
+    "Workflows follow query-existing → conditional-logic → upsert pattern to prevent duplicate records",
+    "Agent instructions use structured sections (INPUT DATA, DECISION LOGIC, OUTPUT CONSTRUCTION) for clarity",
+    "Data preservation pattern ensures email fields are copied exactly through the pipeline without truncation",
+    "Context enrichment pattern queries existing CRM data before classification to inform scoring decisions",
+    "Upsert pattern with counters used in trackConversationState to increment emailCount for existing threads",
+    "Decision node pattern routes qualified emails through full pipeline while bypassing unqualified emails",
+    "Timestamp tracking pattern uses @default(now()) for createdAt and manual now() for updatedAt fields",
+    "Optional fields marked with @optional for data that may not always be available like companyId or dealId"
+  ],
+  "updateHistory": [],
+  "copilotContext": {
+    "lastAnalyzedCode": "2025-01-23T10:00:00Z",
+    "codeComplexity": "complex",
+    "mainUseCases": [
+      "Automated email qualification filtering business opportunities from noise",
+      "Lead intelligence extraction from unstructured email content",
+      "Lead scoring and stage classification based on buying signals",
+      "CRM synchronization creating or updating HubSpot records automatically",
+      "Conversation thread tracking maintaining engagement history and context"
+    ],
+    "commonQueries": [
+      "Retrieve conversation thread by Gmail threadId to check existing lead stage and email count",
+      "Query SalesEngagementConfig to get gmailOwnerEmail and hubspotOwnerId for email processing",
+      "Find all ConversationThread records with leadStage QUALIFIED for sales team prioritization",
+      "Get ConversationThread with high emailCount and no dealId to identify stuck opportunities",
+      "Query ConversationThread by contactIds to find all conversations with specific prospect"
+    ]
+  }
+}
